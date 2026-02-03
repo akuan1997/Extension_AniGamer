@@ -1,5 +1,5 @@
 let dislikedMap = {};
-let syncRequested = false;
+let lastSyncAt = 0;
 
 function loadCacheAndApply() {
   chrome.storage.local.get({ dislikedSn: {} }, (result) => {
@@ -8,9 +8,10 @@ function loadCacheAndApply() {
   });
 }
 
-function requestRemoteSyncOnce() {
-  if (syncRequested) return;
-  syncRequested = true;
+function requestRemoteSync() {
+  const now = Date.now();
+  if (now - lastSyncAt < 10000) return;
+  lastSyncAt = now;
   chrome.runtime.sendMessage({ type: "sync:pull" });
 }
 
@@ -31,7 +32,7 @@ function observerCallback() {
 
 function initContentScript() {
   loadCacheAndApply();
-  requestRemoteSyncOnce();
+  requestRemoteSync();
 
   const domObserver = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
