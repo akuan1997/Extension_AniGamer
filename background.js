@@ -71,6 +71,17 @@ async function getValidSession() {
     session = refreshed || null;
   }
 
+  if (session?.user?.id) {
+    console.log("[auth] session user id:", session.user.id);
+    console.log(
+      "[auth] token exp:",
+      session.expires_at,
+      "now:",
+      nowSeconds()
+    );
+  } else {
+    console.warn("[auth] missing session user id");
+  }
   return session;
 }
 
@@ -181,8 +192,25 @@ async function upsertDisliked(session, sn) {
   );
 
   if (response.ok) return { ok: true };
-  const data = await response.json().catch(() => ({}));
-  return { ok: false, error: data?.message || "Insert failed" };
+  const errorText = await response.text().catch(() => "");
+  let data = {};
+  try {
+    data = errorText ? JSON.parse(errorText) : {};
+  } catch {
+    data = {};
+  }
+  console.warn(
+    "[sync:push] insert failed",
+    "status:",
+    response.status,
+    "user_id:",
+    userId,
+    "sn:",
+    sn,
+    "body:",
+    errorText || data
+  );
+  return { ok: false, error: data?.message || errorText || "Insert failed" };
 }
 
 async function deleteDisliked(session, sn) {
@@ -204,19 +232,38 @@ async function deleteDisliked(session, sn) {
   );
 
   if (response.ok) return { ok: true };
-  const data = await response.json().catch(() => ({}));
-  return { ok: false, error: data?.message || "Delete failed" };
+  const errorText = await response.text().catch(() => "");
+  let data = {};
+  try {
+    data = errorText ? JSON.parse(errorText) : {};
+  } catch {
+    data = {};
+  }
+  console.warn(
+    "[sync:push] delete failed",
+    "status:",
+    response.status,
+    "user_id:",
+    userId,
+    "sn:",
+    sn,
+    "body:",
+    errorText || data
+  );
+  return { ok: false, error: data?.message || errorText || "Delete failed" };
 }
 
 async function handleSyncPull() {
   const session = await getValidSession();
   if (!session) return { ok: false, error: "not_signed_in" };
+  console.log("[sync:pull] user id:", session.user?.id);
   return fetchDislikedList(session);
 }
 
 async function handleSyncPush(sn, disliked) {
   const session = await getValidSession();
   if (!session) return { ok: false, error: "not_signed_in" };
+  console.log("[sync:push] user id:", session.user?.id, "sn:", sn, "disliked:", disliked);
   if (disliked) return upsertDisliked(session, sn);
   return deleteDisliked(session, sn);
 }

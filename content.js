@@ -91,30 +91,44 @@ function applyDislikedStyles() {
         downvoteIcon.style.color = isDisliked ? "#FF6F61" : "gray";
       });
 
-      button.addEventListener("click", (event) => {
+      button.addEventListener("click", async (event) => {
         event.stopPropagation();
         event.preventDefault();
 
-        const nextIsDisliked = !dislikedMap[sn];
-        const nextMap = { ...dislikedMap };
-        if (nextIsDisliked) {
-          nextMap[sn] = true;
-        } else {
-          delete nextMap[sn];
+        const prevIsDisliked = !!dislikedMap[sn];
+        const nextIsDisliked = !prevIsDisliked;
+
+        // Optimistic UI update
+        downvoteIcon.style.color = nextIsDisliked ? "#FF6F61" : "gray";
+        if (img) {
+          img.style.filter = nextIsDisliked ? "grayscale(100%)" : "none";
+          img.style.opacity = nextIsDisliked ? "0.1" : "1";
         }
 
-        dislikedMap = nextMap;
-        chrome.storage.local.set({ dislikedSn: dislikedMap });
-        chrome.runtime.sendMessage({
+        const result = await chrome.runtime.sendMessage({
           type: "sync:push",
           sn,
           disliked: nextIsDisliked,
         });
 
-        downvoteIcon.style.color = nextIsDisliked ? "#FF6F61" : "gray";
+        if (result?.ok) {
+          const nextMap = { ...dislikedMap };
+          if (nextIsDisliked) {
+            nextMap[sn] = true;
+          } else {
+            delete nextMap[sn];
+          }
+          dislikedMap = nextMap;
+          chrome.storage.local.set({ dislikedSn: dislikedMap });
+          return;
+        }
+
+        // Rollback on failure
+        console.warn("sync:push failed", result?.error || result);
+        downvoteIcon.style.color = prevIsDisliked ? "#FF6F61" : "gray";
         if (img) {
-          img.style.filter = nextIsDisliked ? "grayscale(100%)" : "none";
-          img.style.opacity = nextIsDisliked ? "0.1" : "1";
+          img.style.filter = prevIsDisliked ? "grayscale(100%)" : "none";
+          img.style.opacity = prevIsDisliked ? "0.1" : "1";
         }
       });
 
