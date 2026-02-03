@@ -1,17 +1,121 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>aniGamer</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AniGamer Extension</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
-        /*#quote { font-size: 1.2em; color: #333; }*/
+      :root {
+        color-scheme: light;
+        --bg: #111827;
+        --panel: #1f2937;
+        --text: #f9fafb;
+        --muted: #9ca3af;
+        --accent: #f97316;
+        --accent-2: #22c55e;
+        --border: #374151;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        width: 320px;
+      }
+      .wrap {
+        padding: 16px;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 8px 0;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        margin: 8px 0 4px;
+        color: var(--muted);
+      }
+      input {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #111827;
+        color: var(--text);
+        box-sizing: border-box;
+      }
+      button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 0;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .primary {
+        background: var(--accent);
+        color: #1f2937;
+      }
+      .secondary {
+        background: #111827;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .success {
+        background: var(--accent-2);
+        color: #052e16;
+      }
+      .status {
+        margin-top: 10px;
+        font-size: 12px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .tiny {
+        font-size: 11px;
+      }
     </style>
-</head>
-<body>
-<h2>Hide Disliked Images</h2>
-<!--<div id="quote">Click to get a random quote!</div>-->
-<script src="content.js"></script>
-</body>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>AniGamer Sync</h1>
+      <div class="muted">Sign in to sync disliked list across devices.</div>
+
+      <div class="panel">
+        <div id="status" class="status">Status: checking...</div>
+        <div id="emailDisplay" class="muted tiny"></div>
+
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" />
+
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="••••••••" />
+
+        <button id="signIn" class="primary">Sign In</button>
+        <button id="signUp" class="secondary">Sign Up</button>
+
+        <div class="row">
+          <button id="sync" class="secondary">Sync Now</button>
+          <button id="signOut" class="secondary">Sign Out</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
 </html>

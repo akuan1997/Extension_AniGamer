@@ -1,10 +1,14 @@
 {
   "name": "AniGamer Hide Disliked Images",
-  "version": "1.0",
+  "version": "1.1",
   "manifest_version": 3,
   "description": "Automatically hide disliked images on AniGamer",
   "permissions": [
+    "storage",
     "activeTab"
+  ],
+  "host_permissions": [
+    "https://nricslvprigwwrzbmizt.supabase.co/*"
   ],
   "content_scripts": [
     {
@@ -17,7 +21,11 @@
       ]
     }
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
-    "default_title": "哈哈是我啦"
+    "default_title": "AniGamer Extension",
+    "default_popup": "index.html"
   }
 }
