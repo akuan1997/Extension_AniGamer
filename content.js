@@ -239,11 +239,14 @@ function applyDislikedStyles() {
     const sn = snMatch[1];
     bindCardNavigationTracking(link, sn);
     const isDisliked = !!dislikedMap[sn];
+    const scoreValue = Number.parseFloat(scoreMap[sn]);
+    const isLowScore = !Number.isNaN(scoreValue) && scoreValue <= 4.5;
+    const shouldBlur = isDisliked || isLowScore;
 
     const img = link.querySelector(".theme-img");
     if (img) {
-      img.style.filter = isDisliked ? "grayscale(100%)" : "none";
-      img.style.opacity = isDisliked ? "0.1" : "1";
+      img.style.filter = shouldBlur ? "grayscale(100%)" : "none";
+      img.style.opacity = shouldBlur ? "0.1" : "1";
       img.style.pointerEvents = "none";
     }
 
