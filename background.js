@@ -3,6 +3,7 @@ const SUPABASE_KEY = "sb_publishable_koKkSFul0aH2UQkTeA5Zig_QJz_limr";
 
 const STORAGE_SESSION_KEY = "supabaseSession";
 const STORAGE_DISLIKED_KEY = "dislikedSn";
+const STORAGE_SCORE_KEY = "animeScoreBySn";
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -173,6 +174,43 @@ async function fetchDislikedList(session) {
   return { ok: true, count: data.length };
 }
 
+async function fetchScoreList(session) {
+  const userId = session?.user?.id;
+  if (!userId) return { ok: false, error: "Missing user id" };
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/scores?select=sn,score&user_id=eq.${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        Accept: "application/json",
+      },
+    }
+  );
+
+  const data = await response.json().catch(() => []);
+  if (!response.ok) {
+    return { ok: false, error: data?.message || "Fetch scores failed" };
+  }
+
+  const map = {};
+  data.forEach((row) => {
+    if (!row || row.sn === undefined || row.sn === null) return;
+    if (row.score === undefined || row.score === null) return;
+    map[String(row.sn)] = String(row.score);
+  });
+
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: map }, resolve);
+  });
+
+  return { ok: true, count: data.length };
+}
+
 async function upsertDisliked(session, sn) {
   const userId = session?.user?.id;
   if (!userId) return { ok: false, error: "Missing user id" };
@@ -253,11 +291,65 @@ async function deleteDisliked(session, sn) {
   return { ok: false, error: data?.message || errorText || "Delete failed" };
 }
 
+async function upsertScore(session, sn, score) {
+  const userId = session?.user?.id;
+  if (!userId) return { ok: false, error: "Missing user id" };
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/scores?on_conflict=user_id,sn`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({ user_id: userId, sn, score }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    let data = {};
+    try {
+      data = errorText ? JSON.parse(errorText) : {};
+    } catch {
+      data = {};
+    }
+    return {
+      ok: false,
+      error: data?.message || errorText || "Upsert score failed",
+    };
+  }
+
+  const next = await new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_SCORE_KEY]: {} }, (result) => {
+      const current = result[STORAGE_SCORE_KEY] || {};
+      resolve({ ...current, [String(sn)]: String(score) });
+    });
+  });
+
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: next }, resolve);
+  });
+
+  return { ok: true };
+}
+
 async function handleSyncPull() {
   const session = await getValidSession();
   if (!session) return { ok: false, error: "not_signed_in" };
   console.log("[sync:pull] user id:", session.user?.id);
-  return fetchDislikedList(session);
+  const dislikedResult = await fetchDislikedList(session);
+  if (!dislikedResult.ok) return dislikedResult;
+  const scoreResult = await fetchScoreList(session);
+  if (!scoreResult.ok) return scoreResult;
+  return {
+    ok: true,
+    dislikedCount: dislikedResult.count,
+    scoreCount: scoreResult.count,
+  };
 }
 
 async function handleSyncPush(sn, disliked) {
@@ -266,6 +358,12 @@ async function handleSyncPush(sn, disliked) {
   console.log("[sync:push] user id:", session.user?.id, "sn:", sn, "disliked:", disliked);
   if (disliked) return upsertDisliked(session, sn);
   return deleteDisliked(session, sn);
+}
+
+async function handleScoreUpsert(sn, score) {
+  const session = await getValidSession();
+  if (!session) return { ok: false, error: "not_signed_in" };
+  return upsertScore(session, sn, score);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -311,6 +409,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "sync:push": {
           const { sn, disliked } = message;
           const result = await handleSyncPush(sn, disliked);
+          sendResponse(result);
+          return;
+        }
+        case "score:upsert": {
+          const { sn, score } = message;
+          const result = await handleScoreUpsert(sn, score);
           sendResponse(result);
           return;
         }

@@ -1,9 +1,15 @@
 let dislikedMap = {};
+let scoreMap = {};
 let lastSyncAt = 0;
+let isListObserverReady = false;
+let hasCapturedVideoScore = false;
+let videoObserver = null;
+let activeVideoSn = null;
 
 function loadCacheAndApply() {
-  chrome.storage.local.get({ dislikedSn: {} }, (result) => {
+  chrome.storage.local.get({ dislikedSn: {}, animeScoreBySn: {} }, (result) => {
     dislikedMap = result.dislikedSn || {};
+    scoreMap = result.animeScoreBySn || {};
     applyDislikedStyles();
   });
 }
@@ -22,17 +28,27 @@ function addLocationObserver(callback) {
 }
 
 function observerCallback() {
-  if (
+  const isListPage =
     window.location.href.startsWith("https://ani.gamer.com.tw/animeList.php") ||
-    window.location.href.startsWith("https://ani.gamer.com.tw/search.php")
-  ) {
-    initContentScript();
+    window.location.href.startsWith("https://ani.gamer.com.tw/search.php");
+  const isVideoPage = window.location.href.startsWith(
+    "https://ani.gamer.com.tw/animeVideo.php"
+  );
+
+  if (isListPage) {
+    initListPageScript();
+  }
+  if (isVideoPage) {
+    initVideoPageScript();
   }
 }
 
-function initContentScript() {
+function initListPageScript() {
   loadCacheAndApply();
   requestRemoteSync();
+
+  if (isListObserverReady) return;
+  isListObserverReady = true;
 
   const domObserver = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -43,6 +59,91 @@ function initContentScript() {
   });
 
   domObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function getSnFromCurrentUrl() {
+  try {
+    const url = new URL(window.location.href);
+    return url.searchParams.get("sn");
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentPageScore() {
+  const scoreEl = document.querySelector(
+    "#acg_review > div.acg-score-container > div.acg-score > div.score-overall-number"
+  );
+  if (!scoreEl) return null;
+  const raw = (scoreEl.textContent || "").trim();
+  if (!raw) return null;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isNaN(parsed)) return null;
+  return parsed.toFixed(1);
+}
+
+async function captureAndSaveVideoScore() {
+  if (hasCapturedVideoScore) return;
+  const sn = getSnFromCurrentUrl();
+  if (!sn) return;
+
+  const score = getCurrentPageScore();
+  if (!score) return;
+
+  hasCapturedVideoScore = true;
+  const result = await chrome.runtime.sendMessage({
+    type: "score:upsert",
+    sn,
+    score,
+  });
+
+  if (result?.ok) {
+    const next = { ...scoreMap, [sn]: score };
+    scoreMap = next;
+    chrome.storage.local.set({ animeScoreBySn: next });
+    return;
+  }
+
+  if (result?.error === "not_signed_in") {
+    const next = { ...scoreMap, [sn]: score };
+    scoreMap = next;
+    chrome.storage.local.set({ animeScoreBySn: next });
+    console.warn("score:upsert skipped (not_signed_in), saved locally only");
+    return;
+  }
+
+  hasCapturedVideoScore = false;
+  console.warn("score:upsert failed", result?.error || result);
+}
+
+function initVideoPageScript() {
+  const sn = getSnFromCurrentUrl();
+  if (!sn) return;
+  if (activeVideoSn === sn && videoObserver) return;
+
+  if (videoObserver) {
+    videoObserver.disconnect();
+    videoObserver = null;
+  }
+
+  activeVideoSn = sn;
+  loadCacheAndApply();
+  requestRemoteSync();
+  hasCapturedVideoScore = false;
+
+  const runCapture = () => {
+    captureAndSaveVideoScore().catch((error) => {
+      hasCapturedVideoScore = false;
+      console.warn("captureAndSaveVideoScore failed", error);
+    });
+  };
+
+  runCapture();
+  videoObserver = new MutationObserver(runCapture);
+  videoObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(runCapture, 500);
+  setTimeout(runCapture, 1500);
+  setTimeout(runCapture, 3000);
 }
 
 function applyDislikedStyles() {
@@ -72,7 +173,6 @@ function applyDislikedStyles() {
     if (!container.querySelector(".custom-score-badge")) {
       const scoreBadge = document.createElement("div");
       scoreBadge.classList.add("custom-score-badge");
-      scoreBadge.textContent = "5.0";
       scoreBadge.style.position = "absolute";
       scoreBadge.style.left = "5px";
       scoreBadge.style.bottom = "5px";
@@ -86,6 +186,17 @@ function applyDislikedStyles() {
       scoreBadge.style.borderRadius = "6px";
       scoreBadge.style.pointerEvents = "none";
       container.appendChild(scoreBadge);
+    }
+
+    const scoreBadge = container.querySelector(".custom-score-badge");
+    if (scoreBadge) {
+      const score = scoreMap[sn];
+      if (score === undefined || score === null || score === "") {
+        scoreBadge.style.display = "none";
+      } else {
+        scoreBadge.style.display = "block";
+        scoreBadge.textContent = String(score);
+      }
     }
 
     if (!container.querySelector(".custom-button")) {
@@ -186,8 +297,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.dislikedSn) {
     dislikedMap = changes.dislikedSn.newValue || {};
-    applyDislikedStyles();
   }
+  if (changes.animeScoreBySn) {
+    scoreMap = changes.animeScoreBySn.newValue || {};
+  }
+  applyDislikedStyles();
 });
 
 addLocationObserver(observerCallback);

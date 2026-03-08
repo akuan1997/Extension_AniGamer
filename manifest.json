@@ -14,7 +14,8 @@
     {
       "matches": [
         "https://ani.gamer.com.tw/animeList.php*",
-        "https://ani.gamer.com.tw/search.php*"
+        "https://ani.gamer.com.tw/search.php*",
+        "https://ani.gamer.com.tw/animeVideo.php*"
       ],
       "js": [
         "content.js"
