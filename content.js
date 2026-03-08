@@ -69,6 +69,25 @@ function applyDislikedStyles() {
       container.style.position = "relative";
     }
 
+    if (!container.querySelector(".custom-score-badge")) {
+      const scoreBadge = document.createElement("div");
+      scoreBadge.classList.add("custom-score-badge");
+      scoreBadge.textContent = "5.0";
+      scoreBadge.style.position = "absolute";
+      scoreBadge.style.left = "5px";
+      scoreBadge.style.bottom = "5px";
+      scoreBadge.style.zIndex = "2147483646";
+      scoreBadge.style.backgroundColor = "rgba(17, 24, 39, 0.8)";
+      scoreBadge.style.color = "#ffffff";
+      scoreBadge.style.fontSize = "12px";
+      scoreBadge.style.fontWeight = "700";
+      scoreBadge.style.lineHeight = "1";
+      scoreBadge.style.padding = "4px 6px";
+      scoreBadge.style.borderRadius = "6px";
+      scoreBadge.style.pointerEvents = "none";
+      container.appendChild(scoreBadge);
+    }
+
     if (!container.querySelector(".custom-button")) {
       const button = document.createElement("button");
       button.classList.add("custom-button");
