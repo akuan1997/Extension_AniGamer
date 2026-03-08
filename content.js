@@ -1,5 +1,6 @@
 let dislikedMap = {};
 let scoreMap = {};
+let titleMap = {};
 let lastSyncAt = 0;
 let isListObserverReady = false;
 let hasCapturedVideoScore = false;
@@ -20,9 +21,12 @@ function scheduleApplyDislikedStyles() {
 }
 
 function loadCacheAndApply() {
-  chrome.storage.local.get({ dislikedSn: {}, animeScoreBySn: {} }, (result) => {
+  chrome.storage.local.get(
+    { dislikedSn: {}, animeScoreBySn: {}, animeTitleBySn: {} },
+    (result) => {
     dislikedMap = result.dislikedSn || {};
     scoreMap = result.animeScoreBySn || {};
+    titleMap = result.animeTitleBySn || {};
     scheduleApplyDislikedStyles();
   });
 }
@@ -231,6 +235,8 @@ async function initDetailPageScript() {
 
 function applyDislikedStyles() {
   const containerLinks = document.querySelectorAll(".theme-list-main");
+  let hasTitleUpdate = false;
+  const nextTitleMap = { ...titleMap };
 
   containerLinks.forEach((link) => {
     const href = link.getAttribute("href") || "";
@@ -238,6 +244,12 @@ function applyDislikedStyles() {
     if (!snMatch) return;
     const sn = snMatch[1];
     bindCardNavigationTracking(link, sn);
+    const nameEl = link.querySelector(".theme-name");
+    const animeName = (nameEl?.textContent || "").trim();
+    if (animeName && nextTitleMap[sn] !== animeName) {
+      nextTitleMap[sn] = animeName;
+      hasTitleUpdate = true;
+    }
     const isDisliked = !!dislikedMap[sn];
     const scoreValue = Number.parseFloat(scoreMap[sn]);
     const isLowScore = !Number.isNaN(scoreValue) && scoreValue <= 4.5;
@@ -378,6 +390,11 @@ function applyDislikedStyles() {
       container.appendChild(button);
     }
   });
+
+  if (hasTitleUpdate) {
+    titleMap = nextTitleMap;
+    chrome.storage.local.set({ animeTitleBySn: titleMap });
+  }
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -387,6 +404,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.animeScoreBySn) {
     scoreMap = changes.animeScoreBySn.newValue || {};
+  }
+  if (changes.animeTitleBySn) {
+    titleMap = changes.animeTitleBySn.newValue || {};
   }
   scheduleApplyDislikedStyles();
 });

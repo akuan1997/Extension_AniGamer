@@ -6,6 +6,17 @@ const signInBtn = document.getElementById("signIn");
 const signUpBtn = document.getElementById("signUp");
 const signOutBtn = document.getElementById("signOut");
 const syncBtn = document.getElementById("sync");
+const showLowScoresBtn = document.getElementById("showLowScores");
+const lowScoreListEl = document.getElementById("lowScoreList");
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -104,9 +115,53 @@ async function syncNow() {
   setStatus("Status: synced");
 }
 
+function renderLowScores(items) {
+  if (!items.length) {
+    lowScoreListEl.innerHTML = '<div class="muted tiny">No scores <= 4.5</div>';
+    lowScoreListEl.classList.remove("hidden");
+    return;
+  }
+
+  lowScoreListEl.innerHTML = items
+    .map((item) => {
+      const safeTitle = escapeHtml(item.title);
+      const safeSn = encodeURIComponent(String(item.sn));
+      return `<div class="list-item">
+        <div class="list-title">
+          <a href="https://ani.gamer.com.tw/animeRef.php?sn=${safeSn}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
+        </div>
+        <div class="list-meta"><strong>${item.score}</strong></div>
+      </div>`;
+    })
+    .join("");
+  lowScoreListEl.classList.remove("hidden");
+}
+
+async function showLowScores() {
+  const data = await chrome.storage.local.get({
+    animeScoreBySn: {},
+    animeTitleBySn: {},
+  });
+  const scoreMap = data.animeScoreBySn || {};
+  const titleMap = data.animeTitleBySn || {};
+
+  const items = Object.entries(scoreMap)
+    .map(([sn, scoreText]) => {
+      const score = Number.parseFloat(scoreText);
+      const title = (titleMap[sn] || "").trim() || "(Unknown title)";
+      return { sn, score, title };
+    })
+    .filter((item) => !Number.isNaN(item.score) && item.score <= 4.5)
+    .sort((a, b) => a.score - b.score || Number(a.sn) - Number(b.sn))
+    .map((item) => ({ sn: item.sn, score: item.score.toFixed(1), title: item.title }));
+
+  renderLowScores(items);
+}
+
 signInBtn.addEventListener("click", signIn);
 signUpBtn.addEventListener("click", signUp);
 signOutBtn.addEventListener("click", signOut);
 syncBtn.addEventListener("click", syncNow);
+showLowScoresBtn.addEventListener("click", showLowScores);
 
 getStatus();

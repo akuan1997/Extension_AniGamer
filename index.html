@@ -89,6 +89,42 @@
       .tiny {
         font-size: 11px;
       }
+      .list {
+        margin-top: 8px;
+        max-height: 160px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px;
+        background: #111827;
+        font-size: 12px;
+      }
+      .list-item {
+        padding: 6px 2px;
+        border-bottom: 1px solid rgba(156, 163, 175, 0.15);
+      }
+      .list-title {
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+      .list-title a {
+        color: #93c5fd;
+        text-decoration: none;
+      }
+      .list-title a:hover {
+        text-decoration: underline;
+      }
+      .list-meta {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+      }
+      .list-item:last-child {
+        border-bottom: 0;
+      }
+      .hidden {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -113,6 +149,9 @@
           <button id="sync" class="secondary">Sync Now</button>
           <button id="signOut" class="secondary">Sign Out</button>
         </div>
+
+        <button id="showLowScores" class="secondary">Show Low Scores (&lt;=4.5)</button>
+        <div id="lowScoreList" class="list hidden"></div>
       </div>
     </div>
 
