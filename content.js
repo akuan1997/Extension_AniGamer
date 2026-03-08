@@ -65,20 +65,26 @@ function applyDislikedStyles() {
     const container = link.querySelector(".theme-img-block");
     if (!container) return;
 
+    if (getComputedStyle(container).position === "static") {
+      container.style.position = "relative";
+    }
+
     if (!container.querySelector(".custom-button")) {
       const button = document.createElement("button");
       button.classList.add("custom-button");
+      button.type = "button";
       button.style.position = "absolute";
       button.style.top = "35px";
       button.style.right = "5px";
-      button.style.zIndex = "10";
+      button.style.zIndex = "2147483647";
       button.style.backgroundColor = "transparent";
       button.style.border = "none";
       button.style.cursor = "pointer";
       button.style.pointerEvents = "auto";
+      button.style.userSelect = "none";
 
       const downvoteIcon = document.createElement("i");
-      downvoteIcon.style.color = isDisliked ? "#FF6F61" : "gray";
+      downvoteIcon.style.color = "gray";
       downvoteIcon.style.fontSize = "24px";
       downvoteIcon.textContent = "X";
 
@@ -88,8 +94,16 @@ function applyDislikedStyles() {
         downvoteIcon.style.color = "#FF6F61";
       });
       button.addEventListener("mouseout", () => {
-        downvoteIcon.style.color = isDisliked ? "#FF6F61" : "gray";
+        downvoteIcon.style.color = "gray";
       });
+
+      const stopLinkNavigation = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      button.addEventListener("pointerdown", stopLinkNavigation);
+      button.addEventListener("mousedown", stopLinkNavigation);
+      button.addEventListener("mouseup", stopLinkNavigation);
 
       button.addEventListener("click", async (event) => {
         event.stopPropagation();
@@ -99,19 +113,28 @@ function applyDislikedStyles() {
         const nextIsDisliked = !prevIsDisliked;
 
         // Optimistic UI update
-        downvoteIcon.style.color = nextIsDisliked ? "#FF6F61" : "gray";
+        downvoteIcon.style.color = "gray";
         if (img) {
           img.style.filter = nextIsDisliked ? "grayscale(100%)" : "none";
           img.style.opacity = nextIsDisliked ? "0.1" : "1";
         }
 
-        const result = await chrome.runtime.sendMessage({
-          type: "sync:push",
-          sn,
-          disliked: nextIsDisliked,
-        });
+        let result;
+        try {
+          result = await chrome.runtime.sendMessage({
+            type: "sync:push",
+            sn,
+            disliked: nextIsDisliked,
+          });
+        } catch (error) {
+          result = {
+            ok: false,
+            error: error?.message || "sendMessage_failed",
+          };
+        }
 
-        if (result?.ok) {
+        const allowLocalOnly = result?.error === "not_signed_in";
+        if (result?.ok || allowLocalOnly) {
           const nextMap = { ...dislikedMap };
           if (nextIsDisliked) {
             nextMap[sn] = true;
@@ -120,12 +143,15 @@ function applyDislikedStyles() {
           }
           dislikedMap = nextMap;
           chrome.storage.local.set({ dislikedSn: dislikedMap });
+          if (allowLocalOnly) {
+            console.warn("sync:push skipped (not_signed_in), saved locally only");
+          }
           return;
         }
 
         // Rollback on failure
         console.warn("sync:push failed", result?.error || result);
-        downvoteIcon.style.color = prevIsDisliked ? "#FF6F61" : "gray";
+        downvoteIcon.style.color = "gray";
         if (img) {
           img.style.filter = prevIsDisliked ? "grayscale(100%)" : "none";
           img.style.opacity = prevIsDisliked ? "0.1" : "1";
