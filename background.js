@@ -4,6 +4,7 @@ const SUPABASE_KEY = "sb_publishable_koKkSFul0aH2UQkTeA5Zig_QJz_limr";
 const STORAGE_SESSION_KEY = "supabaseSession";
 const STORAGE_DISLIKED_KEY = "dislikedSn";
 const STORAGE_SCORE_KEY = "animeScoreBySn";
+const pendingRefSnByTab = {};
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -341,14 +342,26 @@ async function handleSyncPull() {
   const session = await getValidSession();
   if (!session) return { ok: false, error: "not_signed_in" };
   console.log("[sync:pull] user id:", session.user?.id);
-  const dislikedResult = await fetchDislikedList(session);
-  if (!dislikedResult.ok) return dislikedResult;
-  const scoreResult = await fetchScoreList(session);
-  if (!scoreResult.ok) return scoreResult;
+  const [dislikedResult, scoreResult] = await Promise.all([
+    fetchDislikedList(session),
+    fetchScoreList(session),
+  ]);
+
+  if (!dislikedResult.ok && !scoreResult.ok) {
+    return {
+      ok: false,
+      error: `disliked: ${dislikedResult.error}; scores: ${scoreResult.error}`,
+    };
+  }
+
   return {
     ok: true,
-    dislikedCount: dislikedResult.count,
-    scoreCount: scoreResult.count,
+    dislikedCount: dislikedResult.ok ? dislikedResult.count : 0,
+    scoreCount: scoreResult.ok ? scoreResult.count : 0,
+    warnings: [
+      ...(dislikedResult.ok ? [] : [`disliked: ${dislikedResult.error}`]),
+      ...(scoreResult.ok ? [] : [`scores: ${scoreResult.error}`]),
+    ],
   };
 }
 
@@ -364,6 +377,19 @@ async function handleScoreUpsert(sn, score) {
   const session = await getValidSession();
   if (!session) return { ok: false, error: "not_signed_in" };
   return upsertScore(session, sn, score);
+}
+
+function setPendingRefSn(tabId, refSn) {
+  if (!tabId || !refSn) return { ok: false, error: "invalid_pending_refsn" };
+  pendingRefSnByTab[tabId] = String(refSn);
+  return { ok: true };
+}
+
+function consumePendingRefSn(tabId) {
+  if (!tabId) return { ok: false, error: "missing_tab_id" };
+  const refSn = pendingRefSnByTab[tabId] || null;
+  delete pendingRefSnByTab[tabId];
+  return { ok: true, refSn };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -415,6 +441,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "score:upsert": {
           const { sn, score } = message;
           const result = await handleScoreUpsert(sn, score);
+          sendResponse(result);
+          return;
+        }
+        case "nav:setPendingRefSn": {
+          const tabId = sender?.tab?.id;
+          const result = setPendingRefSn(tabId, message?.refSn);
+          sendResponse(result);
+          return;
+        }
+        case "nav:consumePendingRefSn": {
+          const tabId = sender?.tab?.id;
+          const result = consumePendingRefSn(tabId);
           sendResponse(result);
           return;
         }

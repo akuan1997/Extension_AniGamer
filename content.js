@@ -4,13 +4,26 @@ let lastSyncAt = 0;
 let isListObserverReady = false;
 let hasCapturedVideoScore = false;
 let videoObserver = null;
-let activeVideoSn = null;
+let activeDetailKey = null;
+let pendingRefSnForDetailPage = null;
+let detailInitInProgress = false;
+let lastHandledHref = "";
+let applyScheduled = false;
+
+function scheduleApplyDislikedStyles() {
+  if (applyScheduled) return;
+  applyScheduled = true;
+  requestAnimationFrame(() => {
+    applyScheduled = false;
+    applyDislikedStyles();
+  });
+}
 
 function loadCacheAndApply() {
   chrome.storage.local.get({ dislikedSn: {}, animeScoreBySn: {} }, (result) => {
     dislikedMap = result.dislikedSn || {};
     scoreMap = result.animeScoreBySn || {};
-    applyDislikedStyles();
+    scheduleApplyDislikedStyles();
   });
 }
 
@@ -18,28 +31,35 @@ function requestRemoteSync() {
   const now = Date.now();
   if (now - lastSyncAt < 10000) return;
   lastSyncAt = now;
-  chrome.runtime.sendMessage({ type: "sync:pull" });
-}
-
-function addLocationObserver(callback) {
-  const config = { childList: true, subtree: true };
-  const observer = new MutationObserver(callback);
-  observer.observe(document.body, config);
+  chrome.runtime
+    .sendMessage({ type: "sync:pull" })
+    .then(() => {
+      loadCacheAndApply();
+    })
+    .catch((error) => {
+      console.warn("sync:pull failed", error);
+    });
 }
 
 function observerCallback() {
+  const href = window.location.href;
+  if (href === lastHandledHref) return;
+  lastHandledHref = href;
+
   const isListPage =
-    window.location.href.startsWith("https://ani.gamer.com.tw/animeList.php") ||
-    window.location.href.startsWith("https://ani.gamer.com.tw/search.php");
-  const isVideoPage = window.location.href.startsWith(
-    "https://ani.gamer.com.tw/animeVideo.php"
-  );
+    href.startsWith("https://ani.gamer.com.tw/animeList.php") ||
+    href.startsWith("https://ani.gamer.com.tw/search.php");
+  const isVideoPage = href.startsWith("https://ani.gamer.com.tw/animeVideo.php");
+  const isRefPage = href.startsWith("https://ani.gamer.com.tw/animeRef.php");
 
   if (isListPage) {
     initListPageScript();
   }
-  if (isVideoPage) {
-    initVideoPageScript();
+  if (isVideoPage || isRefPage) {
+    initDetailPageScript().catch((error) => {
+      detailInitInProgress = false;
+      console.warn("initDetailPageScript failed", error);
+    });
   }
 }
 
@@ -51,11 +71,10 @@ function initListPageScript() {
   isListObserverReady = true;
 
   const domObserver = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      if (mutation.addedNodes.length) {
-        applyDislikedStyles();
-      }
-    });
+    const hasAddedNode = mutations.some((mutation) => mutation.addedNodes.length > 0);
+    if (hasAddedNode) {
+      scheduleApplyDislikedStyles();
+    }
   });
 
   domObserver.observe(document.body, { childList: true, subtree: true });
@@ -68,6 +87,61 @@ function getSnFromCurrentUrl() {
   } catch {
     return null;
   }
+}
+
+function getSnFromHref(href) {
+  if (!href) return null;
+  try {
+    const url = new URL(href, window.location.origin);
+    return url.searchParams.get("sn");
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentPageSnInfo() {
+  const href = window.location.href;
+  const isVideoPage = href.startsWith("https://ani.gamer.com.tw/animeVideo.php");
+  const isRefPage = href.startsWith("https://ani.gamer.com.tw/animeRef.php");
+  const currentSn = getSnFromCurrentUrl();
+
+  let refSn = null;
+  let videoSn = null;
+
+  if (isRefPage) refSn = currentSn;
+  if (isVideoPage) videoSn = currentSn;
+
+  if (!refSn) {
+    const refLink = document.querySelector("a[href*='animeRef.php?sn=']");
+    refSn = getSnFromHref(refLink?.getAttribute("href") || refLink?.href);
+  }
+  if (!videoSn) {
+    const videoLink = document.querySelector("a[href*='animeVideo.php?sn=']");
+    videoSn = getSnFromHref(videoLink?.getAttribute("href") || videoLink?.href);
+  }
+
+  const keys = [];
+  if (refSn) keys.push(String(refSn)); // List page uses animeRef sn.
+  if (videoSn && String(videoSn) !== String(refSn)) keys.push(String(videoSn));
+
+  return { refSn, videoSn, keys };
+}
+
+function bindCardNavigationTracking(link, sn) {
+  if (!link || !sn) return;
+  if (link.dataset.pendingSnBound === "1") return;
+  link.dataset.pendingSnBound = "1";
+
+  const trackPendingSn = () => {
+    chrome.runtime
+      .sendMessage({ type: "nav:setPendingRefSn", refSn: String(sn) })
+      .catch((error) => {
+        console.warn("nav:setPendingRefSn failed", error);
+      });
+  };
+
+  link.addEventListener("click", trackPendingSn, true);
+  link.addEventListener("auxclick", trackPendingSn, true);
 }
 
 function getCurrentPageScore() {
@@ -84,31 +158,23 @@ function getCurrentPageScore() {
 
 async function captureAndSaveVideoScore() {
   if (hasCapturedVideoScore) return;
-  const sn = getSnFromCurrentUrl();
-  if (!sn) return;
+  if (!pendingRefSnForDetailPage) return;
 
   const score = getCurrentPageScore();
   if (!score) return;
 
   hasCapturedVideoScore = true;
+  const targetSn = String(pendingRefSnForDetailPage);
   const result = await chrome.runtime.sendMessage({
     type: "score:upsert",
-    sn,
+    sn: targetSn,
     score,
   });
 
-  if (result?.ok) {
-    const next = { ...scoreMap, [sn]: score };
+  if (result?.ok || result?.error === "not_signed_in") {
+    const next = { ...scoreMap, [targetSn]: score };
     scoreMap = next;
     chrome.storage.local.set({ animeScoreBySn: next });
-    return;
-  }
-
-  if (result?.error === "not_signed_in") {
-    const next = { ...scoreMap, [sn]: score };
-    scoreMap = next;
-    chrome.storage.local.set({ animeScoreBySn: next });
-    console.warn("score:upsert skipped (not_signed_in), saved locally only");
     return;
   }
 
@@ -116,20 +182,36 @@ async function captureAndSaveVideoScore() {
   console.warn("score:upsert failed", result?.error || result);
 }
 
-function initVideoPageScript() {
-  const sn = getSnFromCurrentUrl();
-  if (!sn) return;
-  if (activeVideoSn === sn && videoObserver) return;
+async function initDetailPageScript() {
+  const snInfo = getCurrentPageSnInfo();
+  const key = snInfo.refSn ? `ref:${snInfo.refSn}` : snInfo.videoSn ? `video:${snInfo.videoSn}` : null;
+  if (!key) return;
+  if (activeDetailKey === key && (videoObserver || detailInitInProgress)) return;
+  if (detailInitInProgress) return;
+  detailInitInProgress = true;
 
   if (videoObserver) {
     videoObserver.disconnect();
     videoObserver = null;
   }
 
-  activeVideoSn = sn;
+  activeDetailKey = key;
   loadCacheAndApply();
   requestRemoteSync();
   hasCapturedVideoScore = false;
+  pendingRefSnForDetailPage = null;
+
+  const pending = await chrome.runtime
+    .sendMessage({ type: "nav:consumePendingRefSn" })
+    .catch(() => null);
+  if (pending?.ok && pending?.refSn) {
+    pendingRefSnForDetailPage = String(pending.refSn);
+  } else if (snInfo.refSn) {
+    // Fallback for direct entry to animeRef page.
+    pendingRefSnForDetailPage = String(snInfo.refSn);
+  } else {
+    pendingRefSnForDetailPage = null;
+  }
 
   const runCapture = () => {
     captureAndSaveVideoScore().catch((error) => {
@@ -144,6 +226,7 @@ function initVideoPageScript() {
   setTimeout(runCapture, 500);
   setTimeout(runCapture, 1500);
   setTimeout(runCapture, 3000);
+  detailInitInProgress = false;
 }
 
 function applyDislikedStyles() {
@@ -154,6 +237,7 @@ function applyDislikedStyles() {
     const snMatch = href.match(/sn=(\d+)/);
     if (!snMatch) return;
     const sn = snMatch[1];
+    bindCardNavigationTracking(link, sn);
     const isDisliked = !!dislikedMap[sn];
 
     const img = link.querySelector(".theme-img");
@@ -301,8 +385,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.animeScoreBySn) {
     scoreMap = changes.animeScoreBySn.newValue || {};
   }
-  applyDislikedStyles();
+  scheduleApplyDislikedStyles();
 });
 
-addLocationObserver(observerCallback);
+window.addEventListener("popstate", observerCallback);
+window.addEventListener("hashchange", observerCallback);
+setInterval(observerCallback, 1000);
 observerCallback();
