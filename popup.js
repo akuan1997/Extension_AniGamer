@@ -130,7 +130,7 @@ function renderLowScores(items) {
         <div class="list-title">
           <a href="https://ani.gamer.com.tw/animeRef.php?sn=${safeSn}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
         </div>
-        <div class="list-meta"><strong>${item.score}</strong></div>
+        <div class="list-score"><strong>${item.score}</strong></div>
       </div>`;
     })
     .join("");
@@ -152,7 +152,7 @@ async function showLowScores() {
       return { sn, score, title };
     })
     .filter((item) => !Number.isNaN(item.score) && item.score <= 4.5)
-    .sort((a, b) => a.score - b.score || Number(a.sn) - Number(b.sn))
+    .sort((a, b) => b.score - a.score || Number(a.sn) - Number(b.sn))
     .map((item) => ({ sn: item.sn, score: item.score.toFixed(1), title: item.title }));
 
   renderLowScores(items);

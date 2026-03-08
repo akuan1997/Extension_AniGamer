@@ -100,24 +100,34 @@
         font-size: 12px;
       }
       .list-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
         padding: 6px 2px;
         border-bottom: 1px solid rgba(156, 163, 175, 0.15);
       }
       .list-title {
         font-weight: 600;
-        margin-bottom: 3px;
+        margin-bottom: 0;
+        flex: 1;
+        min-width: 0;
       }
       .list-title a {
         color: #93c5fd;
         text-decoration: none;
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .list-title a:hover {
         text-decoration: underline;
       }
-      .list-meta {
-        display: flex;
-        justify-content: space-between;
+      .list-score {
         color: var(--muted);
+        min-width: 34px;
+        text-align: right;
       }
       .list-item:last-child {
         border-bottom: 0;
