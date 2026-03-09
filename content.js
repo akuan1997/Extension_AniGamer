@@ -43,8 +43,16 @@ function saveAnime1TitleHidden(key, hidden) {
   chrome.storage.local.set({ anime1HiddenTitleByKey: anime1HiddenTitleMap });
 }
 
-function applyAnime1RowHidden(row, hidden) {
-  row.style.display = hidden ? "none" : "";
+function applyAnime1TitleHidden(row, titleCell, hidden) {
+  row.style.display = "";
+  const titleLink = titleCell.querySelector("a");
+  if (titleLink) {
+    titleLink.style.textDecoration = hidden ? "line-through" : "";
+    titleLink.style.opacity = hidden ? "0.6" : "";
+    return;
+  }
+  titleCell.style.textDecoration = hidden ? "line-through" : "";
+  titleCell.style.opacity = hidden ? "0.6" : "";
 }
 
 function getAnime1RowKey(row) {
@@ -160,9 +168,10 @@ function applyAnime1Counts() {
       hideButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const nextHidden = true;
+        const nextHidden = !anime1HiddenTitleMap[key];
         saveAnime1TitleHidden(key, nextHidden);
-        applyAnime1RowHidden(row, nextHidden);
+        applyAnime1TitleHidden(row, titleCell, nextHidden);
+        hideButton.textContent = nextHidden ? "顯示" : "隱藏";
       });
 
       hideButton.textContent = "隱藏";
@@ -173,7 +182,11 @@ function applyAnime1Counts() {
     const savedValue = anime1CountMap[key];
     input.value = String(typeof savedValue === "number" ? savedValue : 0);
     const hidden = !!anime1HiddenTitleMap[key];
-    applyAnime1RowHidden(row, hidden);
+    applyAnime1TitleHidden(row, titleCell, hidden);
+    const hideButton = wrap.querySelector(".anime1-hide-title-btn");
+    if (hideButton) {
+      hideButton.textContent = hidden ? "顯示" : "隱藏";
+    }
   });
 }
 
