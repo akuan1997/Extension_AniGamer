@@ -10,6 +10,172 @@ let pendingRefSnForDetailPage = null;
 let detailInitInProgress = false;
 let lastHandledHref = "";
 let applyScheduled = false;
+let anime1CountMap = {};
+let anime1HiddenTitleMap = {};
+let anime1Ready = false;
+let anime1ApplyScheduled = false;
+let anime1ListObserver = null;
+
+function scheduleApplyAnime1Counts() {
+  if (anime1ApplyScheduled) return;
+  anime1ApplyScheduled = true;
+  requestAnimationFrame(() => {
+    anime1ApplyScheduled = false;
+    applyAnime1Counts();
+  });
+}
+
+function saveAnime1Count(key, value) {
+  anime1CountMap = { ...anime1CountMap, [key]: value };
+  chrome.storage.local.set({ anime1TitleCountByKey: anime1CountMap });
+}
+
+function loadAnime1CountsAndApply() {
+  chrome.storage.local.get({ anime1TitleCountByKey: {}, anime1HiddenTitleByKey: {} }, (result) => {
+    anime1CountMap = result.anime1TitleCountByKey || {};
+    anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
+    scheduleApplyAnime1Counts();
+  });
+}
+
+function saveAnime1TitleHidden(key, hidden) {
+  anime1HiddenTitleMap = { ...anime1HiddenTitleMap, [key]: hidden };
+  chrome.storage.local.set({ anime1HiddenTitleByKey: anime1HiddenTitleMap });
+}
+
+function applyAnime1RowHidden(row, hidden) {
+  row.style.display = hidden ? "none" : "";
+}
+
+function getAnime1RowKey(row) {
+  const titleCell = row.querySelector("td:first-child");
+  if (!titleCell) return null;
+
+  const link = titleCell.querySelector("a");
+  if (link?.href) {
+    try {
+      const url = new URL(link.getAttribute("href") || link.href, window.location.origin);
+      return `anime1:url:${url.origin}${url.pathname}${url.search}`;
+    } catch {
+      // Ignore URL parse error and fallback to title text key.
+    }
+  }
+
+  const titleText = (titleCell.textContent || "").replace(/\s+/g, " ").trim();
+  if (!titleText) return null;
+  return `anime1:title:${titleText}`;
+}
+
+function initAnime1PageScript() {
+  loadAnime1CountsAndApply();
+  if (anime1Ready) return;
+  anime1Ready = true;
+
+  if (anime1ListObserver) {
+    anime1ListObserver.disconnect();
+  }
+
+  anime1ListObserver = new MutationObserver((mutations) => {
+    const hasAddedNode = mutations.some((mutation) => mutation.addedNodes.length > 0);
+    if (hasAddedNode) {
+      scheduleApplyAnime1Counts();
+    }
+  });
+
+  anime1ListObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(scheduleApplyAnime1Counts, 300);
+  setTimeout(scheduleApplyAnime1Counts, 1000);
+  setTimeout(scheduleApplyAnime1Counts, 2500);
+}
+
+function applyAnime1Counts() {
+  const rows = document.querySelectorAll("#table-list tbody tr");
+  rows.forEach((row) => {
+    const key = getAnime1RowKey(row);
+    if (!key) return;
+
+    const titleCell = row.querySelector("td:first-child");
+    if (!titleCell) return;
+
+    let wrap = titleCell.querySelector(".anime1-custom-count-wrap");
+    let input = titleCell.querySelector(".anime1-custom-count-input");
+    if (!wrap || !input) {
+      wrap = document.createElement("span");
+      wrap.className = "anime1-custom-count-wrap";
+      wrap.style.display = "inline-flex";
+      wrap.style.alignItems = "center";
+      wrap.style.gap = "4px";
+      wrap.style.marginLeft = "8px";
+
+      const label = document.createElement("span");
+      label.textContent = "#";
+      label.style.opacity = "0.75";
+      label.style.fontSize = "12px";
+
+      input = document.createElement("input");
+      input.className = "anime1-custom-count-input";
+      input.type = "number";
+      input.step = "1";
+      input.min = "0";
+      input.style.width = "40px";
+      input.style.height = "22px";
+      input.style.padding = "0 4px";
+      input.style.fontSize = "12px";
+      input.style.lineHeight = "22px";
+      input.style.border = "1px solid #cbd5e1";
+      input.style.borderRadius = "4px";
+      input.style.boxSizing = "border-box";
+
+      const commitValue = () => {
+        const parsed = Number.parseInt(input.value, 10);
+        const nextValue = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
+        input.value = String(nextValue);
+        saveAnime1Count(key, nextValue);
+      };
+
+      input.addEventListener("change", commitValue);
+      input.addEventListener("blur", commitValue);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          commitValue();
+          input.blur();
+        }
+      });
+
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+
+      const hideButton = document.createElement("button");
+      hideButton.type = "button";
+      hideButton.className = "anime1-hide-title-btn";
+      hideButton.style.height = "22px";
+      hideButton.style.padding = "0 6px";
+      hideButton.style.fontSize = "12px";
+      hideButton.style.lineHeight = "20px";
+      hideButton.style.border = "1px solid #cbd5e1";
+      hideButton.style.borderRadius = "4px";
+      hideButton.style.background = "#ffffff";
+      hideButton.style.cursor = "pointer";
+
+      hideButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const nextHidden = true;
+        saveAnime1TitleHidden(key, nextHidden);
+        applyAnime1RowHidden(row, nextHidden);
+      });
+
+      hideButton.textContent = "隱藏";
+      wrap.appendChild(hideButton);
+      titleCell.appendChild(wrap);
+    }
+
+    const savedValue = anime1CountMap[key];
+    input.value = String(typeof savedValue === "number" ? savedValue : 0);
+    const hidden = !!anime1HiddenTitleMap[key];
+    applyAnime1RowHidden(row, hidden);
+  });
+}
 
 function scheduleApplyDislikedStyles() {
   if (applyScheduled) return;
@@ -55,6 +221,7 @@ function observerCallback() {
     href.startsWith("https://ani.gamer.com.tw/search.php");
   const isVideoPage = href.startsWith("https://ani.gamer.com.tw/animeVideo.php");
   const isRefPage = href.startsWith("https://ani.gamer.com.tw/animeRef.php");
+  const isAnime1Page = href.startsWith("https://anime1.me/");
 
   if (isListPage) {
     initListPageScript();
@@ -64,6 +231,9 @@ function observerCallback() {
       detailInitInProgress = false;
       console.warn("initDetailPageScript failed", error);
     });
+  }
+  if (isAnime1Page) {
+    initAnime1PageScript();
   }
 }
 
@@ -407,6 +577,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.animeTitleBySn) {
     titleMap = changes.animeTitleBySn.newValue || {};
+  }
+  if (changes.anime1TitleCountByKey) {
+    anime1CountMap = changes.anime1TitleCountByKey.newValue || {};
+    scheduleApplyAnime1Counts();
+  }
+  if (changes.anime1HiddenTitleByKey) {
+    anime1HiddenTitleMap = changes.anime1HiddenTitleByKey.newValue || {};
+    scheduleApplyAnime1Counts();
   }
   scheduleApplyDislikedStyles();
 });

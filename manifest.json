@@ -16,7 +16,8 @@
         "https://ani.gamer.com.tw/animeList.php*",
         "https://ani.gamer.com.tw/search.php*",
         "https://ani.gamer.com.tw/animeVideo.php*",
-        "https://ani.gamer.com.tw/animeRef.php*"
+        "https://ani.gamer.com.tw/animeRef.php*",
+        "https://anime1.me/*"
       ],
       "js": [
         "content.js"
