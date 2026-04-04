@@ -42,6 +42,27 @@ async function clearSession() {
   });
 }
 
+async function getStoredScoreMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_SCORE_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_SCORE_KEY] || {});
+    });
+  });
+}
+
+async function saveStoredScoreMap(scoreMap) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: scoreMap }, resolve);
+  });
+}
+
+async function persistScoreLocally(sn, score) {
+  const current = await getStoredScoreMap();
+  const next = { ...current, [String(sn)]: String(score) };
+  await saveStoredScoreMap(next);
+  return next;
+}
+
 
 async function refreshSession(session) {
   if (!session?.refresh_token) return null;
@@ -198,16 +219,16 @@ async function fetchScoreList(session) {
     return { ok: false, error: data?.message || "Fetch scores failed" };
   }
 
-  const map = {};
+  const remoteMap = {};
   data.forEach((row) => {
     if (!row || row.sn === undefined || row.sn === null) return;
     if (row.score === undefined || row.score === null) return;
-    map[String(row.sn)] = String(row.score);
+    remoteMap[String(row.sn)] = String(row.score);
   });
 
-  await new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: map }, resolve);
-  });
+  const current = await getStoredScoreMap();
+  const merged = { ...current, ...remoteMap };
+  await saveStoredScoreMap(merged);
 
   return { ok: true, count: data.length };
 }
@@ -324,17 +345,6 @@ async function upsertScore(session, sn, score) {
     };
   }
 
-  const next = await new Promise((resolve) => {
-    chrome.storage.local.get({ [STORAGE_SCORE_KEY]: {} }, (result) => {
-      const current = result[STORAGE_SCORE_KEY] || {};
-      resolve({ ...current, [String(sn)]: String(score) });
-    });
-  });
-
-  await new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: next }, resolve);
-  });
-
   return { ok: true };
 }
 
@@ -374,9 +384,24 @@ async function handleSyncPush(sn, disliked) {
 }
 
 async function handleScoreUpsert(sn, score) {
+  const localScores = await persistScoreLocally(sn, score);
   const session = await getValidSession();
-  if (!session) return { ok: false, error: "not_signed_in" };
-  return upsertScore(session, sn, score);
+  if (!session) {
+    return { ok: true, localOnly: true, scoreMap: localScores };
+  }
+
+  const remoteResult = await upsertScore(session, sn, score);
+  if (!remoteResult.ok) {
+    console.warn("[score:upsert] remote save failed, kept local score", remoteResult.error);
+    return {
+      ok: true,
+      localOnly: true,
+      warning: remoteResult.error,
+      scoreMap: localScores,
+    };
+  }
+
+  return { ok: true, scoreMap: localScores };
 }
 
 function setPendingRefSn(tabId, refSn) {

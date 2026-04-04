@@ -343,6 +343,12 @@ function getCurrentPageScore() {
   return parsed.toFixed(1);
 }
 
+function formatScoreOneDecimal(rawScore) {
+  const parsed = Number.parseFloat(String(rawScore));
+  if (Number.isNaN(parsed)) return "";
+  return parsed.toFixed(1);
+}
+
 async function captureAndSaveVideoScore() {
   if (hasCapturedVideoScore) return;
   if (!pendingRefSnForDetailPage) return;
@@ -358,10 +364,13 @@ async function captureAndSaveVideoScore() {
     score,
   });
 
-  if (result?.ok || result?.error === "not_signed_in") {
-    const next = { ...scoreMap, [targetSn]: score };
+  if (result?.ok) {
+    const next = result?.scoreMap || { ...scoreMap, [targetSn]: score };
     scoreMap = next;
-    chrome.storage.local.set({ animeScoreBySn: next });
+    scheduleApplyDislikedStyles();
+    if (result?.warning) {
+      console.warn("score:upsert saved locally only", result.warning);
+    }
     return;
   }
 
@@ -473,11 +482,12 @@ function applyDislikedStyles() {
     const scoreBadge = container.querySelector(".custom-score-badge");
     if (scoreBadge) {
       const score = scoreMap[sn];
-      if (score === undefined || score === null || score === "") {
+      const formattedScore = formatScoreOneDecimal(score);
+      if (!formattedScore) {
         scoreBadge.style.display = "none";
       } else {
         scoreBadge.style.display = "block";
-        scoreBadge.textContent = String(score);
+        scoreBadge.textContent = formattedScore;
       }
     }
 
