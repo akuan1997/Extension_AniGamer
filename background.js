@@ -247,34 +247,6 @@ function buildOAuthUrl(provider) {
   return authUrl.toString();
 }
 
-async function signInWithSso({ domain, providerId }) {
-  const payload = { redirect_to: getRedirectUrl() };
-  if (providerId) {
-    payload.provider_id = providerId;
-  } else if (domain) {
-    payload.domain = domain;
-  } else {
-    return { ok: false, error: "Missing SSO domain or provider ID" };
-  }
-
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/sso`, {
-    method: "POST",
-    headers: {
-      apikey: SUPABASE_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.url) {
-    return { ok: false, error: data?.msg || data?.message || "SSO sign in failed" };
-  }
-
-  const callbackUrl = await launchAuthFlow(data.url);
-  return saveSessionFromCallback(callbackUrl);
-}
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -295,23 +267,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
         case "auth:oauth": {
-          const result = await signInWithOAuth(message.provider);
-          sendResponse(result);
-          return;
-        }
-        case "auth:debugUrl": {
-          sendResponse({
-            ok: true,
-            authUrl: buildOAuthUrl(message.provider),
-            redirectUrl: getRedirectUrl(),
-          });
-          return;
-        }
-        case "auth:sso": {
-          const result = await signInWithSso({
-            domain: message.domain,
-            providerId: message.providerId,
-          });
+          const result = await signInWithOAuth("github");
           sendResponse(result);
           return;
         }

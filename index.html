@@ -86,30 +86,15 @@
   <body>
     <div class="wrap">
       <h1>Anime1 Sync</h1>
-      <div class="muted">Sign in with Supabase OAuth or enterprise SSO.</div>
+      <div class="muted">Sign in with GitHub.</div>
 
       <div class="panel">
         <div id="status" class="status">Status: checking...</div>
         <div id="emailDisplay" class="muted tiny"></div>
 
-        <label for="provider">OAuth Provider</label>
-        <select id="provider">
-          <option value="google">Google</option>
-          <option value="github">GitHub</option>
-        </select>
-        <button id="oauthSignIn" class="primary">Sign In with OAuth</button>
-
-        <label for="ssoInput">Enterprise SSO Domain or Provider ID</label>
-        <input id="ssoInput" type="text" placeholder="company.com" />
-        <button id="ssoSignIn" class="secondary">Enterprise SSO</button>
+        <button id="oauthSignIn" class="primary">Sign In with GitHub</button>
 
         <button id="signOut" class="secondary">Sign Out</button>
-
-        <label>OAuth URL</label>
-        <div id="oauthUrl" class="muted tiny"></div>
-
-        <label>Redirect URL</label>
-        <div id="redirectUrl" class="muted tiny"></div>
       </div>
     </div>
 
