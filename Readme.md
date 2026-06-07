@@ -19,6 +19,18 @@ Add the Chrome extension redirect URL to Supabase:
 3. Add the extension redirect URL to Redirect URLs.
 4. Enable the GitHub OAuth provider.
 
+This project pins the unpacked extension ID with the manifest `key`:
+
+```text
+gkglgehedhdfcmofneegigaadgneehha
+```
+
+Use this redirect URL in Supabase:
+
+```text
+https://gkglgehedhdfcmofneegigaadgneehha.chromiumapp.org/supabase-auth
+```
+
 ## Supabase Table Setup
 
 Run [supabase.sql](supabase.sql) in the Supabase SQL Editor before syncing hide/show state.
