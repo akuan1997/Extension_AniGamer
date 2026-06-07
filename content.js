@@ -118,7 +118,7 @@ function bindInteractiveControlEvents(element, preventDefault = false) {
 }
 
 async function syncAnime1Count(cat, count) {
-  if (!cat) return;
+  if (!cat) return { ok: true, localOnly: true };
   const result = await chrome.runtime
     .sendMessage({
       type: "anime1:countUpsert",
@@ -133,6 +133,7 @@ async function syncAnime1Count(cat, count) {
   if (!result?.ok && result?.error !== "not_signed_in") {
     console.warn("anime1:countUpsert failed", result?.error || result);
   }
+  return result;
 }
 
 function parseCountInputValue(input) {
@@ -142,14 +143,14 @@ function parseCountInputValue(input) {
   return nextValue;
 }
 
-function saveCountInputValue(input, key, cat) {
+async function saveCountInputValue(input, key, cat) {
   const nextValue = parseCountInputValue(input);
   if (cat) {
     saveAnime1CatCount(cat, nextValue);
-    syncAnime1Count(cat, nextValue);
-    return;
+    return syncAnime1Count(cat, nextValue);
   }
   saveAnime1Count(key, nextValue);
+  return { ok: true, localOnly: true };
 }
 
 function createCountInput(key, cat) {
@@ -202,8 +203,23 @@ function createCountSaveButton(input, key, cat) {
 
   bindInteractiveControlEvents(saveButton, true);
 
-  saveButton.addEventListener("click", () => {
-    saveCountInputValue(input, key, cat);
+  saveButton.addEventListener("click", async () => {
+    const originalText = "Save";
+    saveButton.disabled = true;
+    saveButton.textContent = "Saving...";
+
+    const result = await saveCountInputValue(input, key, cat);
+
+    if (result?.ok) {
+      saveButton.textContent = "✓";
+    } else {
+      saveButton.textContent = "Error";
+    }
+
+    setTimeout(() => {
+      saveButton.disabled = false;
+      saveButton.textContent = originalText;
+    }, 1200);
   });
 
   return saveButton;
