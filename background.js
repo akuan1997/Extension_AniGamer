@@ -3,6 +3,7 @@ const SUPABASE_KEY = "sb_publishable_ZB3VrxWap8UFuP3bgq-DIw_lbHWH_JF";
 
 const STORAGE_SESSION_KEY = "supabaseSession";
 const STORAGE_ANIME1_HIDDEN_CAT_KEY = "anime1HiddenCatByCat";
+const STORAGE_ANIME1_COUNT_CAT_KEY = "anime1CountByCat";
 const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
 const OAUTH_REDIRECT_PATH = "supabase-auth";
 
@@ -75,6 +76,12 @@ async function fetchUser(accessToken) {
 async function saveAnime1HiddenCatMap(map) {
   return new Promise((resolve) => {
     chrome.storage.local.set({ [STORAGE_ANIME1_HIDDEN_CAT_KEY]: map }, resolve);
+  });
+}
+
+async function saveAnime1CountCatMap(map) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_ANIME1_COUNT_CAT_KEY]: map }, resolve);
   });
 }
 
@@ -261,7 +268,7 @@ async function pullAnime1Visibility() {
   if (!session || !userId) return { ok: false, error: "not_signed_in" };
 
   const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show&user_id=eq.${encodeURIComponent(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show,count&user_id=eq.${encodeURIComponent(
       userId
     )}`,
     {
@@ -280,12 +287,19 @@ async function pullAnime1Visibility() {
   }
 
   const hiddenMap = {};
+  const countMap = {};
   data.forEach((row) => {
     if (row?.cat === undefined || row?.cat === null) return;
-    hiddenMap[String(row.cat)] = row.show === "hide";
+    const cat = String(row.cat);
+    hiddenMap[cat] = row.show === "hide";
+    if (row.count !== undefined && row.count !== null) {
+      const count = Number.parseInt(String(row.count), 10);
+      countMap[cat] = Number.isNaN(count) || count < 0 ? 0 : count;
+    }
   });
 
   await saveAnime1HiddenCatMap(hiddenMap);
+  await saveAnime1CountCatMap(countMap);
   return { ok: true, count: data.length };
 }
 
@@ -327,6 +341,48 @@ async function upsertAnime1Visibility(cat, show) {
   return { ok: true };
 }
 
+async function upsertAnime1Count(cat, count) {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const catNumber = Number.parseInt(String(cat), 10);
+  if (!Number.isInteger(catNumber) || catNumber < 0) {
+    return { ok: false, error: "invalid_cat" };
+  }
+
+  const countNumber = Number.parseInt(String(count), 10);
+  if (!Number.isInteger(countNumber) || countNumber < 0) {
+    return { ok: false, error: "invalid_count" };
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?on_conflict=user_id,cat`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        cat: catNumber,
+        count: countNumber,
+        updated_at: new Date().toISOString(),
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return { ok: false, error: data?.message || "Upsert anime1 count failed" };
+  }
+
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -363,6 +419,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "anime1:visibilityUpsert": {
           const result = await upsertAnime1Visibility(message.cat, message.show);
+          sendResponse(result);
+          return;
+        }
+        case "anime1:countUpsert": {
+          const result = await upsertAnime1Count(message.cat, message.count);
           sendResponse(result);
           return;
         }

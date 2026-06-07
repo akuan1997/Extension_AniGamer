@@ -1,4 +1,5 @@
 let anime1CountMap = {};
+let anime1CountByCatMap = {};
 let anime1HiddenTitleMap = {};
 let anime1HiddenCatMap = {};
 let anime1Ready = false;
@@ -20,6 +21,11 @@ function saveAnime1Count(key, value) {
   chrome.storage.local.set({ anime1TitleCountByKey: anime1CountMap });
 }
 
+function saveAnime1CatCount(cat, value) {
+  anime1CountByCatMap = { ...anime1CountByCatMap, [cat]: value };
+  chrome.storage.local.set({ anime1CountByCat: anime1CountByCatMap });
+}
+
 function saveAnime1TitleHidden(key, hidden) {
   anime1HiddenTitleMap = { ...anime1HiddenTitleMap, [key]: hidden };
   chrome.storage.local.set({ anime1HiddenTitleByKey: anime1HiddenTitleMap });
@@ -34,11 +40,13 @@ function loadAnime1StateAndApply() {
   chrome.storage.local.get(
     {
       anime1TitleCountByKey: {},
+      anime1CountByCat: {},
       anime1HiddenTitleByKey: {},
       anime1HiddenCatByCat: {},
     },
     (result) => {
       anime1CountMap = result.anime1TitleCountByKey || {};
+      anime1CountByCatMap = result.anime1CountByCat || {};
       anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
       anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
       scheduleApplyAnime1Counts();
@@ -93,7 +101,58 @@ function applyAnime1TitleHidden(row, titleCell, hidden) {
   target.style.opacity = hidden ? "0.6" : "";
 }
 
-function createCountInput(key) {
+function stopControlPropagation(event) {
+  event.stopPropagation();
+}
+
+function stopControlCommand(event) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function bindInteractiveControlEvents(element, preventDefault = false) {
+  const handler = preventDefault ? stopControlCommand : stopControlPropagation;
+  ["pointerdown", "mousedown", "mouseup", "click", "auxclick"].forEach((eventName) => {
+    element.addEventListener(eventName, handler);
+  });
+}
+
+async function syncAnime1Count(cat, count) {
+  if (!cat) return;
+  const result = await chrome.runtime
+    .sendMessage({
+      type: "anime1:countUpsert",
+      cat,
+      count,
+    })
+    .catch((error) => ({
+      ok: false,
+      error: error?.message || "sendMessage_failed",
+    }));
+
+  if (!result?.ok && result?.error !== "not_signed_in") {
+    console.warn("anime1:countUpsert failed", result?.error || result);
+  }
+}
+
+function parseCountInputValue(input) {
+  const parsed = Number.parseInt(input.value, 10);
+  const nextValue = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
+  input.value = String(nextValue);
+  return nextValue;
+}
+
+function saveCountInputValue(input, key, cat) {
+  const nextValue = parseCountInputValue(input);
+  if (cat) {
+    saveAnime1CatCount(cat, nextValue);
+    syncAnime1Count(cat, nextValue);
+    return;
+  }
+  saveAnime1Count(key, nextValue);
+}
+
+function createCountInput(key, cat) {
   const input = document.createElement("input");
   input.className = "anime1-custom-count-input";
   input.type = "number";
@@ -107,24 +166,47 @@ function createCountInput(key) {
   input.style.border = "1px solid #cbd5e1";
   input.style.borderRadius = "4px";
   input.style.boxSizing = "border-box";
+  input.style.pointerEvents = "auto";
+  input.style.position = "relative";
+  input.style.zIndex = "2";
 
-  const commitValue = () => {
-    const parsed = Number.parseInt(input.value, 10);
-    const nextValue = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
-    input.value = String(nextValue);
-    saveAnime1Count(key, nextValue);
-  };
+  bindInteractiveControlEvents(input);
 
-  input.addEventListener("change", commitValue);
-  input.addEventListener("blur", commitValue);
   input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
     if (event.key === "Enter") {
-      commitValue();
+      saveCountInputValue(input, key, cat);
       input.blur();
     }
   });
 
   return input;
+}
+
+function createCountSaveButton(input, key, cat) {
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "anime1-save-count-btn";
+  saveButton.textContent = "Save";
+  saveButton.style.height = "22px";
+  saveButton.style.padding = "0 6px";
+  saveButton.style.fontSize = "12px";
+  saveButton.style.lineHeight = "20px";
+  saveButton.style.border = "1px solid #cbd5e1";
+  saveButton.style.borderRadius = "4px";
+  saveButton.style.background = "#ffffff";
+  saveButton.style.cursor = "pointer";
+  saveButton.style.pointerEvents = "auto";
+  saveButton.style.position = "relative";
+  saveButton.style.zIndex = "2";
+
+  bindInteractiveControlEvents(saveButton, true);
+
+  saveButton.addEventListener("click", () => {
+    saveCountInputValue(input, key, cat);
+  });
+
+  return saveButton;
 }
 
 async function syncAnime1Visibility(cat, hidden) {
@@ -176,10 +258,13 @@ function createHideButton(key, cat, row, titleCell) {
   hideButton.style.borderRadius = "4px";
   hideButton.style.background = "#ffffff";
   hideButton.style.cursor = "pointer";
+  hideButton.style.pointerEvents = "auto";
+  hideButton.style.position = "relative";
+  hideButton.style.zIndex = "2";
 
-  hideButton.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
+  bindInteractiveControlEvents(hideButton, true);
+
+  hideButton.addEventListener("click", () => {
     const currentHidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
     const nextHidden = !currentHidden;
     if (cat) {
@@ -213,17 +298,24 @@ function ensureAnime1Controls(row, titleCell, key, cat) {
     wrap.style.alignItems = "center";
     wrap.style.gap = "4px";
     wrap.style.marginLeft = "8px";
+    wrap.style.position = "relative";
+    wrap.style.zIndex = "2";
+    wrap.style.pointerEvents = "auto";
+
+    bindInteractiveControlEvents(wrap);
 
     const label = document.createElement("span");
     label.textContent = "#";
     label.style.opacity = "0.75";
     label.style.fontSize = "12px";
 
-    input = createCountInput(key);
+    input = createCountInput(key, cat);
+    const saveButton = createCountSaveButton(input, key, cat);
     const hideButton = createHideButton(key, cat, row, titleCell);
 
     wrap.appendChild(label);
     wrap.appendChild(input);
+    wrap.appendChild(saveButton);
     wrap.appendChild(hideButton);
     titleCell.appendChild(wrap);
   }
@@ -239,8 +331,10 @@ function applyAnime1Counts() {
     const { key, cat, titleCell } = rowInfo;
 
     const { wrap, input } = ensureAnime1Controls(row, titleCell, key, cat);
-    const savedValue = anime1CountMap[key];
-    input.value = String(typeof savedValue === "number" ? savedValue : 0);
+    const savedValue = cat ? anime1CountByCatMap[cat] : anime1CountMap[key];
+    if (document.activeElement !== input) {
+      input.value = String(typeof savedValue === "number" ? savedValue : 0);
+    }
 
     const hidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
     applyAnime1TitleHidden(row, titleCell, hidden);
@@ -279,6 +373,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.anime1TitleCountByKey) {
     anime1CountMap = changes.anime1TitleCountByKey.newValue || {};
+    scheduleApplyAnime1Counts();
+  }
+  if (changes.anime1CountByCat) {
+    anime1CountByCatMap = changes.anime1CountByCat.newValue || {};
     scheduleApplyAnime1Counts();
   }
   if (changes.anime1HiddenTitleByKey) {
