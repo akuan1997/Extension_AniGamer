@@ -1,22 +1,19 @@
 {
-  "name": "AniGamer Hide Disliked Images",
-  "version": "1.1",
+  "name": "Anime1 Sync",
+  "version": "1.2",
   "manifest_version": 3,
-  "description": "Automatically hide disliked images on AniGamer",
+  "description": "Track and hide Anime1 titles with Supabase SSO",
   "permissions": [
     "storage",
-    "activeTab"
+    "identity",
+    "tabs"
   ],
   "host_permissions": [
-    "https://nricslvprigwwrzbmizt.supabase.co/*"
+    "https://nkqujduwuxulmqioezej.supabase.co/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://ani.gamer.com.tw/animeList.php*",
-        "https://ani.gamer.com.tw/search.php*",
-        "https://ani.gamer.com.tw/animeVideo.php*",
-        "https://ani.gamer.com.tw/animeRef.php*",
         "https://anime1.me/*"
       ],
       "js": [
@@ -28,7 +25,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "AniGamer Extension",
+    "default_title": "Anime1 Extension",
     "default_popup": "index.html"
   }
 }

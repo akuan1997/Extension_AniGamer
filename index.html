@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AniGamer Extension</title>
+    <title>Anime1 Extension</title>
     <style>
       :root {
         color-scheme: light;
@@ -11,8 +11,7 @@
         --panel: #1f2937;
         --text: #f9fafb;
         --muted: #9ca3af;
-        --accent: #f97316;
-        --accent-2: #22c55e;
+        --accent: #22c55e;
         --border: #374151;
       }
       body {
@@ -36,17 +35,18 @@
       .panel {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 8px;
         padding: 12px;
         margin-top: 10px;
       }
       label {
         display: block;
         font-size: 12px;
-        margin: 8px 0 4px;
+        margin: 10px 0 4px;
         color: var(--muted);
       }
-      input {
+      input,
+      select {
         width: 100%;
         padding: 8px 10px;
         border-radius: 8px;
@@ -66,102 +66,50 @@
       }
       .primary {
         background: var(--accent);
-        color: #1f2937;
+        color: #052e16;
       }
       .secondary {
         background: #111827;
         border: 1px solid var(--border);
         color: var(--text);
       }
-      .success {
-        background: var(--accent-2);
-        color: #052e16;
-      }
       .status {
         margin-top: 10px;
         font-size: 12px;
       }
-      .row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
-      }
       .tiny {
         font-size: 11px;
-      }
-      .list {
-        margin-top: 8px;
-        max-height: 160px;
-        overflow: auto;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 6px;
-        background: #111827;
-        font-size: 12px;
-      }
-      .list-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 6px 2px;
-        border-bottom: 1px solid rgba(156, 163, 175, 0.15);
-      }
-      .list-title {
-        font-weight: 600;
-        margin-bottom: 0;
-        flex: 1;
-        min-width: 0;
-      }
-      .list-title a {
-        color: #93c5fd;
-        text-decoration: none;
-        display: block;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .list-title a:hover {
-        text-decoration: underline;
-      }
-      .list-score {
-        color: var(--muted);
-        min-width: 34px;
-        text-align: right;
-      }
-      .list-item:last-child {
-        border-bottom: 0;
-      }
-      .hidden {
-        display: none;
+        word-break: break-all;
       }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <h1>AniGamer Sync</h1>
-      <div class="muted">Sign in to sync disliked list across devices.</div>
+      <h1>Anime1 Sync</h1>
+      <div class="muted">Sign in with Supabase OAuth or enterprise SSO.</div>
 
       <div class="panel">
         <div id="status" class="status">Status: checking...</div>
         <div id="emailDisplay" class="muted tiny"></div>
 
-        <label for="email">Email</label>
-        <input id="email" type="email" placeholder="you@example.com" />
+        <label for="provider">OAuth Provider</label>
+        <select id="provider">
+          <option value="google">Google</option>
+          <option value="github">GitHub</option>
+        </select>
+        <button id="oauthSignIn" class="primary">Sign In with OAuth</button>
 
-        <label for="password">Password</label>
-        <input id="password" type="password" placeholder="••••••••" />
+        <label for="ssoInput">Enterprise SSO Domain or Provider ID</label>
+        <input id="ssoInput" type="text" placeholder="company.com" />
+        <button id="ssoSignIn" class="secondary">Enterprise SSO</button>
 
-        <button id="signIn" class="primary">Sign In</button>
-        <button id="signUp" class="secondary">Sign Up</button>
+        <button id="signOut" class="secondary">Sign Out</button>
 
-        <div class="row">
-          <button id="sync" class="secondary">Sync Now</button>
-          <button id="signOut" class="secondary">Sign Out</button>
-        </div>
+        <label>OAuth URL</label>
+        <div id="oauthUrl" class="muted tiny"></div>
 
-        <button id="showLowScores" class="secondary">Show Low Scores (&lt;=4.5)</button>
-        <div id="lowScoreList" class="list hidden"></div>
+        <label>Redirect URL</label>
+        <div id="redirectUrl" class="muted tiny"></div>
       </div>
     </div>
 

@@ -1,10 +1,8 @@
-const SUPABASE_URL = "https://nricslvprigwwrzbmizt.supabase.co";
-const SUPABASE_KEY = "sb_publishable_koKkSFul0aH2UQkTeA5Zig_QJz_limr";
+const SUPABASE_URL = "https://nkqujduwuxulmqioezej.supabase.co";
+const SUPABASE_KEY = "sb_publishable_ZB3VrxWap8UFuP3bgq-DIw_lbHWH_JF";
 
 const STORAGE_SESSION_KEY = "supabaseSession";
-const STORAGE_DISLIKED_KEY = "dislikedSn";
-const STORAGE_SCORE_KEY = "animeScoreBySn";
-const pendingRefSnByTab = {};
+const OAUTH_REDIRECT_PATH = "supabase-auth";
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -12,13 +10,13 @@ function nowSeconds() {
 
 function buildSessionFromAuth(data) {
   if (!data) return null;
-  const expiresAt = data.expires_at || nowSeconds() + (data.expires_in || 0);
+  const expiresAt = Number(data.expires_at) || nowSeconds() + Number(data.expires_in || 0);
   return {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
-    token_type: data.token_type,
+    token_type: data.token_type || "bearer",
     expires_at: expiresAt,
-    user: data.user,
+    user: data.user || null,
   };
 }
 
@@ -42,27 +40,35 @@ async function clearSession() {
   });
 }
 
-async function getStoredScoreMap() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get({ [STORAGE_SCORE_KEY]: {} }, (result) => {
-      resolve(result[STORAGE_SCORE_KEY] || {});
-    });
+async function signOut() {
+  const session = await getSession();
+  if (session?.access_token) {
+    await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    }).catch(() => null);
+  }
+
+  await clearSession();
+}
+
+async function fetchUser(accessToken) {
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: "GET",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
   });
-}
 
-async function saveStoredScoreMap(scoreMap) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_SCORE_KEY]: scoreMap }, resolve);
-  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return null;
+  return data;
 }
-
-async function persistScoreLocally(sn, score) {
-  const current = await getStoredScoreMap();
-  const next = { ...current, [String(sn)]: String(score) };
-  await saveStoredScoreMap(next);
-  return next;
-}
-
 
 async function refreshSession(session) {
   if (!session?.refresh_token) return null;
@@ -78,9 +84,13 @@ async function refreshSession(session) {
     }
   );
 
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) return null;
-  const data = await response.json();
+
   const nextSession = buildSessionFromAuth(data);
+  if (nextSession?.access_token && !nextSession.user) {
+    nextSession.user = await fetchUser(nextSession.access_token);
+  }
   if (nextSession) await setSession(nextSession);
   return nextSession;
 }
@@ -90,331 +100,179 @@ async function getValidSession() {
   if (!session) return null;
 
   if (session.expires_at && session.expires_at - 30 <= nowSeconds()) {
-    const refreshed = await refreshSession(session);
-    session = refreshed || null;
+    session = await refreshSession(session);
   }
 
-  if (session?.user?.id) {
-    console.log("[auth] session user id:", session.user.id);
-    console.log(
-      "[auth] token exp:",
-      session.expires_at,
-      "now:",
-      nowSeconds()
-    );
-  } else {
-    console.warn("[auth] missing session user id");
-  }
   return session;
 }
 
-async function signUp(email, password) {
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+function getRedirectUrl() {
+  return chrome.identity.getRedirectURL(OAUTH_REDIRECT_PATH);
+}
+
+function parseCallbackParams(callbackUrl) {
+  const url = new URL(callbackUrl);
+  const params = new URLSearchParams(url.search);
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+
+  for (const [key, value] of hashParams.entries()) {
+    if (!params.has(key)) params.set(key, value);
+  }
+
+  return params;
+}
+
+async function launchAuthFlow(authUrl) {
+  return new Promise((resolve, reject) => {
+    chrome.identity.launchWebAuthFlow(
+      { url: authUrl, interactive: true },
+      (callbackUrl) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+        if (!callbackUrl) {
+          reject(new Error("Missing auth callback URL"));
+          return;
+        }
+        resolve(callbackUrl);
+      }
+    );
+  });
+}
+
+async function launchAuthFlowInTab(authUrl) {
+  const redirectUrl = getRedirectUrl();
+
+  return new Promise((resolve, reject) => {
+    let authTabId = null;
+    let timeoutId = null;
+
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+      chrome.tabs.onRemoved.removeListener(handleRemoved);
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+
+    const finish = (callbackUrl) => {
+      cleanup();
+      if (authTabId !== null) {
+        chrome.tabs.remove(authTabId).catch(() => null);
+      }
+      resolve(callbackUrl);
+    };
+
+    const handleUpdated = (tabId, changeInfo, tab) => {
+      if (tabId !== authTabId) return;
+      const nextUrl = changeInfo.url || tab?.url || "";
+      if (nextUrl.startsWith(redirectUrl)) {
+        finish(nextUrl);
+      }
+    };
+
+    const handleRemoved = (tabId) => {
+      if (tabId !== authTabId) return;
+      cleanup();
+      reject(new Error("Authorization tab was closed before sign in completed"));
+    };
+
+    chrome.tabs.onUpdated.addListener(handleUpdated);
+    chrome.tabs.onRemoved.addListener(handleRemoved);
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error("Authorization timed out"));
+    }, 120000);
+
+    chrome.tabs.create({ url: authUrl, active: true }, (tab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        cleanup();
+        reject(new Error(runtimeError.message));
+        return;
+      }
+
+      authTabId = tab?.id ?? null;
+      if (authTabId === null) {
+        cleanup();
+        reject(new Error("Unable to open authorization tab"));
+      }
+    });
+  });
+}
+
+async function saveSessionFromCallback(callbackUrl) {
+  const params = parseCallbackParams(callbackUrl);
+  const error = params.get("error") || params.get("error_description");
+  if (error) return { ok: false, error };
+
+  const session = buildSessionFromAuth({
+    access_token: params.get("access_token"),
+    refresh_token: params.get("refresh_token"),
+    token_type: params.get("token_type"),
+    expires_in: params.get("expires_in"),
+    expires_at: params.get("expires_at"),
+  });
+
+  if (!session?.access_token) {
+    return { ok: false, error: "Missing access token in auth callback" };
+  }
+
+  session.user = await fetchUser(session.access_token);
+  await setSession(session);
+  return { ok: true, session, user: session.user };
+}
+
+async function signInWithOAuth(provider) {
+  const authUrlString = buildOAuthUrl(provider);
+  let callbackUrl;
+  try {
+    callbackUrl = await launchAuthFlow(authUrlString);
+  } catch (error) {
+    const message = error?.message || "";
+    if (!message.includes("Authorization page could not be loaded")) {
+      throw error;
+    }
+    callbackUrl = await launchAuthFlowInTab(authUrlString);
+  }
+  return saveSessionFromCallback(callbackUrl);
+}
+
+function buildOAuthUrl(provider) {
+  const authUrl = new URL(`${SUPABASE_URL}/auth/v1/authorize`);
+  authUrl.searchParams.set("provider", provider || "github");
+  authUrl.searchParams.set("redirect_to", getRedirectUrl());
+  authUrl.searchParams.set("flow_type", "implicit");
+  return authUrl.toString();
+}
+
+async function signInWithSso({ domain, providerId }) {
+  const payload = { redirect_to: getRedirectUrl() };
+  if (providerId) {
+    payload.provider_id = providerId;
+  } else if (domain) {
+    payload.domain = domain;
+  } else {
+    return { ok: false, error: "Missing SSO domain or provider ID" };
+  }
+
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/sso`, {
     method: "POST",
     headers: {
       apikey: SUPABASE_KEY,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(payload),
   });
 
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    return {
-      ok: false,
-      error:
-        data?.msg ||
-        data?.error_description ||
-        data?.error ||
-        "Sign up failed",
-    };
+  if (!response.ok || !data?.url) {
+    return { ok: false, error: data?.msg || data?.message || "SSO sign in failed" };
   }
 
-  const session = buildSessionFromAuth(data);
-  if (session) await setSession(session);
-  return { ok: true, session, user: data.user || session?.user };
-}
-
-async function signIn(email, password) {
-  const response = await fetch(
-    `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
-    {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password }),
-    }
-  );
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    return {
-      ok: false,
-      error: data?.error_description || data?.error || "Sign in failed",
-    };
-  }
-
-  const session = buildSessionFromAuth(data);
-  if (session) await setSession(session);
-  return { ok: true, session, user: session?.user };
-}
-
-async function fetchDislikedList(session) {
-  const userId = session?.user?.id;
-  if (!userId) return { ok: false, error: "Missing user id" };
-
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/disliked?select=sn&user_id=eq.${encodeURIComponent(
-      userId
-    )}`,
-    {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        Accept: "application/json",
-      },
-    }
-  );
-
-  const data = await response.json().catch(() => []);
-  if (!response.ok) {
-    return { ok: false, error: data?.message || "Fetch failed" };
-  }
-
-  const map = {};
-  data.forEach((row) => {
-    if (row?.sn) map[row.sn] = true;
-  });
-
-  await new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_DISLIKED_KEY]: map }, resolve);
-  });
-
-  return { ok: true, count: data.length };
-}
-
-async function fetchScoreList(session) {
-  const userId = session?.user?.id;
-  if (!userId) return { ok: false, error: "Missing user id" };
-
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/scores?select=sn,score&user_id=eq.${encodeURIComponent(
-      userId
-    )}`,
-    {
-      method: "GET",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        Accept: "application/json",
-      },
-    }
-  );
-
-  const data = await response.json().catch(() => []);
-  if (!response.ok) {
-    return { ok: false, error: data?.message || "Fetch scores failed" };
-  }
-
-  const remoteMap = {};
-  data.forEach((row) => {
-    if (!row || row.sn === undefined || row.sn === null) return;
-    if (row.score === undefined || row.score === null) return;
-    remoteMap[String(row.sn)] = String(row.score);
-  });
-
-  const current = await getStoredScoreMap();
-  const merged = { ...current, ...remoteMap };
-  await saveStoredScoreMap(merged);
-
-  return { ok: true, count: data.length };
-}
-
-async function upsertDisliked(session, sn) {
-  const userId = session?.user?.id;
-  if (!userId) return { ok: false, error: "Missing user id" };
-
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/disliked?on_conflict=user_id,sn`,
-    {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify({ user_id: userId, sn }),
-    }
-  );
-
-  if (response.ok) return { ok: true };
-  const errorText = await response.text().catch(() => "");
-  let data = {};
-  try {
-    data = errorText ? JSON.parse(errorText) : {};
-  } catch {
-    data = {};
-  }
-  console.warn(
-    "[sync:push] insert failed",
-    "status:",
-    response.status,
-    "user_id:",
-    userId,
-    "sn:",
-    sn,
-    "body:",
-    errorText || data
-  );
-  return { ok: false, error: data?.message || errorText || "Insert failed" };
-}
-
-async function deleteDisliked(session, sn) {
-  const userId = session?.user?.id;
-  if (!userId) return { ok: false, error: "Missing user id" };
-
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/disliked?user_id=eq.${encodeURIComponent(
-      userId
-    )}&sn=eq.${encodeURIComponent(sn)}`,
-    {
-      method: "DELETE",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        Prefer: "return=minimal",
-      },
-    }
-  );
-
-  if (response.ok) return { ok: true };
-  const errorText = await response.text().catch(() => "");
-  let data = {};
-  try {
-    data = errorText ? JSON.parse(errorText) : {};
-  } catch {
-    data = {};
-  }
-  console.warn(
-    "[sync:push] delete failed",
-    "status:",
-    response.status,
-    "user_id:",
-    userId,
-    "sn:",
-    sn,
-    "body:",
-    errorText || data
-  );
-  return { ok: false, error: data?.message || errorText || "Delete failed" };
-}
-
-async function upsertScore(session, sn, score) {
-  const userId = session?.user?.id;
-  if (!userId) return { ok: false, error: "Missing user id" };
-
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/scores?on_conflict=user_id,sn`,
-    {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify({ user_id: userId, sn, score }),
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    let data = {};
-    try {
-      data = errorText ? JSON.parse(errorText) : {};
-    } catch {
-      data = {};
-    }
-    return {
-      ok: false,
-      error: data?.message || errorText || "Upsert score failed",
-    };
-  }
-
-  return { ok: true };
-}
-
-async function handleSyncPull() {
-  const session = await getValidSession();
-  if (!session) return { ok: false, error: "not_signed_in" };
-  console.log("[sync:pull] user id:", session.user?.id);
-  const [dislikedResult, scoreResult] = await Promise.all([
-    fetchDislikedList(session),
-    fetchScoreList(session),
-  ]);
-
-  if (!dislikedResult.ok && !scoreResult.ok) {
-    return {
-      ok: false,
-      error: `disliked: ${dislikedResult.error}; scores: ${scoreResult.error}`,
-    };
-  }
-
-  return {
-    ok: true,
-    dislikedCount: dislikedResult.ok ? dislikedResult.count : 0,
-    scoreCount: scoreResult.ok ? scoreResult.count : 0,
-    warnings: [
-      ...(dislikedResult.ok ? [] : [`disliked: ${dislikedResult.error}`]),
-      ...(scoreResult.ok ? [] : [`scores: ${scoreResult.error}`]),
-    ],
-  };
-}
-
-async function handleSyncPush(sn, disliked) {
-  const session = await getValidSession();
-  if (!session) return { ok: false, error: "not_signed_in" };
-  console.log("[sync:push] user id:", session.user?.id, "sn:", sn, "disliked:", disliked);
-  if (disliked) return upsertDisliked(session, sn);
-  return deleteDisliked(session, sn);
-}
-
-async function handleScoreUpsert(sn, score) {
-  const localScores = await persistScoreLocally(sn, score);
-  const session = await getValidSession();
-  if (!session) {
-    return { ok: true, localOnly: true, scoreMap: localScores };
-  }
-
-  const remoteResult = await upsertScore(session, sn, score);
-  if (!remoteResult.ok) {
-    console.warn("[score:upsert] remote save failed, kept local score", remoteResult.error);
-    return {
-      ok: true,
-      localOnly: true,
-      warning: remoteResult.error,
-      scoreMap: localScores,
-    };
-  }
-
-  return { ok: true, scoreMap: localScores };
-}
-
-function setPendingRefSn(tabId, refSn) {
-  if (!tabId || !refSn) return { ok: false, error: "invalid_pending_refsn" };
-  pendingRefSnByTab[tabId] = String(refSn);
-  return { ok: true };
-}
-
-function consumePendingRefSn(tabId) {
-  if (!tabId) return { ok: false, error: "missing_tab_id" };
-  const refSn = pendingRefSnByTab[tabId] || null;
-  delete pendingRefSnByTab[tabId];
-  return { ok: true, refSn };
+  const callbackUrl = await launchAuthFlow(data.url);
+  return saveSessionFromCallback(callbackUrl);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -432,61 +290,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             ok: true,
             signedIn: !!session,
             email: session?.user?.email || null,
+            redirectUrl: getRedirectUrl(),
           });
           return;
         }
-        case "auth:signup": {
-          const { email, password } = message;
-          const result = await signUp(email, password);
+        case "auth:oauth": {
+          const result = await signInWithOAuth(message.provider);
           sendResponse(result);
           return;
         }
-      case "auth:signin": {
-        const { email, password } = message;
-        const result = await signIn(email, password);
-        sendResponse(result);
-        return;
-      }
+        case "auth:debugUrl": {
+          sendResponse({
+            ok: true,
+            authUrl: buildOAuthUrl(message.provider),
+            redirectUrl: getRedirectUrl(),
+          });
+          return;
+        }
+        case "auth:sso": {
+          const result = await signInWithSso({
+            domain: message.domain,
+            providerId: message.providerId,
+          });
+          sendResponse(result);
+          return;
+        }
         case "auth:signout": {
-          await clearSession();
+          await signOut();
           sendResponse({ ok: true });
-          return;
-        }
-        case "sync:pull": {
-          const result = await handleSyncPull();
-          sendResponse(result);
-          return;
-        }
-        case "sync:push": {
-          const { sn, disliked } = message;
-          const result = await handleSyncPush(sn, disliked);
-          sendResponse(result);
-          return;
-        }
-        case "score:upsert": {
-          const { sn, score } = message;
-          const result = await handleScoreUpsert(sn, score);
-          sendResponse(result);
-          return;
-        }
-        case "nav:setPendingRefSn": {
-          const tabId = sender?.tab?.id;
-          const result = setPendingRefSn(tabId, message?.refSn);
-          sendResponse(result);
-          return;
-        }
-        case "nav:consumePendingRefSn": {
-          const tabId = sender?.tab?.id;
-          const result = consumePendingRefSn(tabId);
-          sendResponse(result);
           return;
         }
         default:
           sendResponse({ ok: false, error: "unknown_message" });
       }
     } catch (error) {
-      const messageText =
-        error?.message || error?.toString?.() || "unknown_error";
+      const messageText = error?.message || error?.toString?.() || "unknown_error";
       sendResponse({ ok: false, error: messageText });
     }
   })();

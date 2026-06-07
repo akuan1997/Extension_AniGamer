@@ -1,26 +1,28 @@
 const statusEl = document.getElementById("status");
 const emailDisplayEl = document.getElementById("emailDisplay");
-const emailInput = document.getElementById("email");
-const passwordInput = document.getElementById("password");
-const signInBtn = document.getElementById("signIn");
-const signUpBtn = document.getElementById("signUp");
+const providerSelect = document.getElementById("provider");
+const oauthSignInBtn = document.getElementById("oauthSignIn");
+const ssoInput = document.getElementById("ssoInput");
+const ssoSignInBtn = document.getElementById("ssoSignIn");
 const signOutBtn = document.getElementById("signOut");
-const syncBtn = document.getElementById("sync");
-const showLowScoresBtn = document.getElementById("showLowScores");
-const lowScoreListEl = document.getElementById("lowScoreList");
-
-function escapeHtml(text) {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
+const oauthUrlEl = document.getElementById("oauthUrl");
+const redirectUrlEl = document.getElementById("redirectUrl");
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
   statusEl.style.color = isError ? "#fca5a5" : "#d1fae5";
+}
+
+function parseSsoInput(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return {};
+
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (uuidPattern.test(trimmed)) {
+    return { providerId: trimmed };
+  }
+  return { domain: trimmed };
 }
 
 async function getStatus() {
@@ -29,6 +31,8 @@ async function getStatus() {
     setStatus("Status: error", true);
     return;
   }
+
+  redirectUrlEl.textContent = response.redirectUrl || "";
 
   if (response.signedIn) {
     setStatus("Status: signed in");
@@ -39,60 +43,51 @@ async function getStatus() {
   }
 }
 
-async function signIn() {
-  const email = emailInput.value.trim();
-  const password = passwordInput.value;
-  if (!email || !password) {
-    setStatus("Status: email/password required", true);
-    return;
-  }
-  setStatus("Status: signing in...");
-  const result = await chrome.runtime.sendMessage({
-    type: "auth:signin",
-    email,
-    password,
+async function refreshDebugUrl() {
+  const response = await chrome.runtime.sendMessage({
+    type: "auth:debugUrl",
+    provider: providerSelect.value,
   });
-  if (!result) {
-    setStatus("Status: no response from background", true);
-    return;
-  }
-  if (!result?.ok) {
-    setStatus(
-      `Status: ${result?.error ? result.error : "sign in failed"}`,
-      true
-    );
-    return;
-  }
-  await getStatus();
-  await syncNow();
+
+  if (!response?.ok) return;
+  oauthUrlEl.textContent = response.authUrl || "";
+  redirectUrlEl.textContent = response.redirectUrl || "";
 }
 
-async function signUp() {
-  const email = emailInput.value.trim();
-  const password = passwordInput.value;
-  if (!email || !password) {
-    setStatus("Status: email/password required", true);
-    return;
-  }
-  setStatus("Status: creating account...");
+async function signInWithOAuth() {
+  setStatus("Status: opening OAuth...");
   const result = await chrome.runtime.sendMessage({
-    type: "auth:signup",
-    email,
-    password,
+    type: "auth:oauth",
+    provider: providerSelect.value,
   });
-  if (!result) {
-    setStatus("Status: no response from background", true);
-    return;
-  }
+
   if (!result?.ok) {
-    setStatus(
-      `Status: ${result?.error ? result.error : "sign up failed"}`,
-      true
-    );
+    setStatus(`Status: ${result?.error || "sign in failed"}`, true);
     return;
   }
+
   await getStatus();
-  await syncNow();
+}
+
+async function signInWithSso() {
+  const ssoParams = parseSsoInput(ssoInput.value);
+  if (!ssoParams.domain && !ssoParams.providerId) {
+    setStatus("Status: SSO domain or provider ID required", true);
+    return;
+  }
+
+  setStatus("Status: opening enterprise SSO...");
+  const result = await chrome.runtime.sendMessage({
+    type: "auth:sso",
+    ...ssoParams,
+  });
+
+  if (!result?.ok) {
+    setStatus(`Status: ${result?.error || "SSO failed"}`, true);
+    return;
+  }
+
+  await getStatus();
 }
 
 async function signOut() {
@@ -101,67 +96,10 @@ async function signOut() {
   await getStatus();
 }
 
-async function syncNow() {
-  setStatus("Status: syncing...");
-  const result = await chrome.runtime.sendMessage({ type: "sync:pull" });
-  if (!result) {
-    setStatus("Status: no response from background", true);
-    return;
-  }
-  if (!result?.ok) {
-    setStatus(`Status: ${result?.error || "sync failed"}`, true);
-    return;
-  }
-  setStatus("Status: synced");
-}
-
-function renderLowScores(items) {
-  if (!items.length) {
-    lowScoreListEl.innerHTML = '<div class="muted tiny">No scores <= 4.5</div>';
-    lowScoreListEl.classList.remove("hidden");
-    return;
-  }
-
-  lowScoreListEl.innerHTML = items
-    .map((item) => {
-      const safeTitle = escapeHtml(item.title);
-      const safeSn = encodeURIComponent(String(item.sn));
-      return `<div class="list-item">
-        <div class="list-title">
-          <a href="https://ani.gamer.com.tw/animeRef.php?sn=${safeSn}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
-        </div>
-        <div class="list-score"><strong>${item.score}</strong></div>
-      </div>`;
-    })
-    .join("");
-  lowScoreListEl.classList.remove("hidden");
-}
-
-async function showLowScores() {
-  const data = await chrome.storage.local.get({
-    animeScoreBySn: {},
-    animeTitleBySn: {},
-  });
-  const scoreMap = data.animeScoreBySn || {};
-  const titleMap = data.animeTitleBySn || {};
-
-  const items = Object.entries(scoreMap)
-    .map(([sn, scoreText]) => {
-      const score = Number.parseFloat(scoreText);
-      const title = (titleMap[sn] || "").trim() || "(Unknown title)";
-      return { sn, score, title };
-    })
-    .filter((item) => !Number.isNaN(item.score) && item.score <= 4.5)
-    .sort((a, b) => b.score - a.score || Number(a.sn) - Number(b.sn))
-    .map((item) => ({ sn: item.sn, score: item.score.toFixed(1), title: item.title }));
-
-  renderLowScores(items);
-}
-
-signInBtn.addEventListener("click", signIn);
-signUpBtn.addEventListener("click", signUp);
+oauthSignInBtn.addEventListener("click", signInWithOAuth);
+providerSelect.addEventListener("change", refreshDebugUrl);
+ssoSignInBtn.addEventListener("click", signInWithSso);
 signOutBtn.addEventListener("click", signOut);
-syncBtn.addEventListener("click", syncNow);
-showLowScoresBtn.addEventListener("click", showLowScores);
 
 getStatus();
+refreshDebugUrl();
