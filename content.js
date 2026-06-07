@@ -84,13 +84,14 @@ function getAnime1RowInfo(row) {
   const href = link?.getAttribute("href") || link?.href || "";
   const normalizedUrl = normalizeAnime1Url(href);
   const cat = getAnime1CatFromHref(href);
+  const title = (link?.textContent || titleCell.textContent || "").replace(/\s+/g, " ").trim();
   if (normalizedUrl) {
-    return { key: `anime1:url:${normalizedUrl}`, cat, titleCell };
+    return { key: `anime1:url:${normalizedUrl}`, cat, title, titleCell };
   }
 
-  const titleText = (titleCell.textContent || "").replace(/\s+/g, " ").trim();
+  const titleText = title;
   if (!titleText) return null;
-  return { key: `anime1:title:${titleText}`, cat, titleCell };
+  return { key: `anime1:title:${titleText}`, cat, title: titleText, titleCell };
 }
 
 function applyAnime1TitleHidden(row, titleCell, hidden) {
@@ -211,7 +212,7 @@ function createCountSaveButton(input, key, cat) {
     const result = await saveCountInputValue(input, key, cat);
 
     if (result?.ok) {
-      saveButton.textContent = "✓";
+      saveButton.textContent = "OK";
     } else {
       saveButton.textContent = "Error";
     }
@@ -296,7 +297,36 @@ function createHideButton(key, cat, row, titleCell) {
   return hideButton;
 }
 
-function ensureAnime1Controls(row, titleCell, key, cat) {
+function createAniGamerSearchButton(title) {
+  const searchButton = document.createElement("button");
+  searchButton.type = "button";
+  searchButton.className = "anime1-anigamer-search-btn";
+  searchButton.textContent = "動畫瘋";
+  searchButton.title = title ? `Search AniGamer: ${title}` : "Search AniGamer";
+  searchButton.style.height = "22px";
+  searchButton.style.padding = "0 6px";
+  searchButton.style.fontSize = "12px";
+  searchButton.style.lineHeight = "20px";
+  searchButton.style.border = "1px solid #cbd5e1";
+  searchButton.style.borderRadius = "4px";
+  searchButton.style.background = "#ffffff";
+  searchButton.style.cursor = "pointer";
+  searchButton.style.pointerEvents = "auto";
+  searchButton.style.position = "relative";
+  searchButton.style.zIndex = "2";
+
+  bindInteractiveControlEvents(searchButton, true);
+
+  searchButton.addEventListener("click", () => {
+    if (!title) return;
+    const url = `https://ani.gamer.com.tw/search.php?keyword=${encodeURIComponent(title)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  });
+
+  return searchButton;
+}
+
+function ensureAnime1Controls(row, titleCell, key, cat, title) {
   let wrap = titleCell.querySelector(".anime1-custom-count-wrap");
   let input = titleCell.querySelector(".anime1-custom-count-input");
 
@@ -328,11 +358,13 @@ function ensureAnime1Controls(row, titleCell, key, cat) {
     input = createCountInput(key, cat);
     const saveButton = createCountSaveButton(input, key, cat);
     const hideButton = createHideButton(key, cat, row, titleCell);
+    const aniGamerButton = createAniGamerSearchButton(title);
 
     wrap.appendChild(label);
     wrap.appendChild(input);
     wrap.appendChild(saveButton);
     wrap.appendChild(hideButton);
+    wrap.appendChild(aniGamerButton);
     titleCell.appendChild(wrap);
   }
 
@@ -344,9 +376,9 @@ function applyAnime1Counts() {
   rows.forEach((row) => {
     const rowInfo = getAnime1RowInfo(row);
     if (!rowInfo) return;
-    const { key, cat, titleCell } = rowInfo;
+    const { key, cat, title, titleCell } = rowInfo;
 
-    const { wrap, input } = ensureAnime1Controls(row, titleCell, key, cat);
+    const { wrap, input } = ensureAnime1Controls(row, titleCell, key, cat, title);
     const savedValue = cat ? anime1CountByCatMap[cat] : anime1CountMap[key];
     if (document.activeElement !== input) {
       input.value = String(typeof savedValue === "number" ? savedValue : 0);
