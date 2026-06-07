@@ -6,17 +6,29 @@ Chrome extension for adding lightweight tracking controls to Anime1 list pages.
 
 - Adds a numeric counter beside each Anime1 title.
 - Adds a hide/show toggle beside each Anime1 title.
-- Stores Anime1 state in `chrome.storage.local`.
+- Stores Anime1 counters in `chrome.storage.local`.
+- Syncs Anime1 hide/show state to Supabase by `cat`.
 - Supports Supabase sign-in through GitHub OAuth.
 
 ## Supabase Auth Setup
 
-The popup shows the extension redirect URL after loading. Add that URL to Supabase:
+Add the Chrome extension redirect URL to Supabase:
 
 1. Open Supabase Dashboard.
 2. Go to Authentication > URL Configuration.
 3. Add the extension redirect URL to Redirect URLs.
 4. Enable the GitHub OAuth provider.
+
+## Supabase Table Setup
+
+Run [supabase.sql](supabase.sql) in the Supabase SQL Editor before syncing hide/show state.
+
+The extension writes rows to `anime1_visibility` like:
+
+```text
+cat | show
+1886 | hide
+```
 
 ## Installation
 

@@ -1,8 +1,10 @@
 let anime1CountMap = {};
 let anime1HiddenTitleMap = {};
+let anime1HiddenCatMap = {};
 let anime1Ready = false;
 let anime1ApplyScheduled = false;
 let anime1ListObserver = null;
+let anime1RemoteSyncAt = 0;
 
 function scheduleApplyAnime1Counts() {
   if (anime1ApplyScheduled) return;
@@ -23,12 +25,22 @@ function saveAnime1TitleHidden(key, hidden) {
   chrome.storage.local.set({ anime1HiddenTitleByKey: anime1HiddenTitleMap });
 }
 
+function saveAnime1CatHidden(cat, hidden) {
+  anime1HiddenCatMap = { ...anime1HiddenCatMap, [cat]: hidden };
+  chrome.storage.local.set({ anime1HiddenCatByCat: anime1HiddenCatMap });
+}
+
 function loadAnime1StateAndApply() {
   chrome.storage.local.get(
-    { anime1TitleCountByKey: {}, anime1HiddenTitleByKey: {} },
+    {
+      anime1TitleCountByKey: {},
+      anime1HiddenTitleByKey: {},
+      anime1HiddenCatByCat: {},
+    },
     (result) => {
       anime1CountMap = result.anime1TitleCountByKey || {};
       anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
+      anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
       scheduleApplyAnime1Counts();
     }
   );
@@ -45,17 +57,32 @@ function normalizeAnime1Url(href) {
   }
 }
 
-function getAnime1RowKey(row) {
+function getAnime1CatFromHref(href) {
+  if (!href) return null;
+  try {
+    const url = new URL(href, window.location.protocol + "//" + window.location.host);
+    const cat = url.searchParams.get("cat");
+    return cat && /^\d+$/.test(cat) ? cat : null;
+  } catch {
+    return null;
+  }
+}
+
+function getAnime1RowInfo(row) {
   const titleCell = row.querySelector("td:first-child");
   if (!titleCell) return null;
 
   const link = titleCell.querySelector("a[href]");
-  const normalizedUrl = normalizeAnime1Url(link?.getAttribute("href") || link?.href);
-  if (normalizedUrl) return `anime1:url:${normalizedUrl}`;
+  const href = link?.getAttribute("href") || link?.href || "";
+  const normalizedUrl = normalizeAnime1Url(href);
+  const cat = getAnime1CatFromHref(href);
+  if (normalizedUrl) {
+    return { key: `anime1:url:${normalizedUrl}`, cat, titleCell };
+  }
 
   const titleText = (titleCell.textContent || "").replace(/\s+/g, " ").trim();
   if (!titleText) return null;
-  return `anime1:title:${titleText}`;
+  return { key: `anime1:title:${titleText}`, cat, titleCell };
 }
 
 function applyAnime1TitleHidden(row, titleCell, hidden) {
@@ -100,7 +127,44 @@ function createCountInput(key) {
   return input;
 }
 
-function createHideButton(key, row, titleCell) {
+async function syncAnime1Visibility(cat, hidden) {
+  if (!cat) return;
+  const result = await chrome.runtime
+    .sendMessage({
+      type: "anime1:visibilityUpsert",
+      cat,
+      show: hidden ? "hide" : "show",
+    })
+    .catch((error) => ({
+      ok: false,
+      error: error?.message || "sendMessage_failed",
+    }));
+
+  if (!result?.ok && result?.error !== "not_signed_in") {
+    console.warn("anime1:visibilityUpsert failed", result?.error || result);
+  }
+}
+
+function requestAnime1VisibilityPull() {
+  const now = Date.now();
+  if (now - anime1RemoteSyncAt < 10000) return;
+  anime1RemoteSyncAt = now;
+
+  chrome.runtime
+    .sendMessage({ type: "anime1:visibilityPull" })
+    .then((result) => {
+      if (result?.ok) {
+        loadAnime1StateAndApply();
+      } else if (result?.error !== "not_signed_in") {
+        console.warn("anime1:visibilityPull failed", result?.error || result);
+      }
+    })
+    .catch((error) => {
+      console.warn("anime1:visibilityPull failed", error);
+    });
+}
+
+function createHideButton(key, cat, row, titleCell) {
   const hideButton = document.createElement("button");
   hideButton.type = "button";
   hideButton.className = "anime1-hide-title-btn";
@@ -116,8 +180,14 @@ function createHideButton(key, row, titleCell) {
   hideButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    const nextHidden = !anime1HiddenTitleMap[key];
-    saveAnime1TitleHidden(key, nextHidden);
+    const currentHidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
+    const nextHidden = !currentHidden;
+    if (cat) {
+      saveAnime1CatHidden(cat, nextHidden);
+      syncAnime1Visibility(cat, nextHidden);
+    } else {
+      saveAnime1TitleHidden(key, nextHidden);
+    }
     applyAnime1TitleHidden(row, titleCell, nextHidden);
     hideButton.textContent = nextHidden ? "顯示" : "隱藏";
   });
@@ -125,7 +195,7 @@ function createHideButton(key, row, titleCell) {
   return hideButton;
 }
 
-function ensureAnime1Controls(row, titleCell, key) {
+function ensureAnime1Controls(row, titleCell, key, cat) {
   let wrap = titleCell.querySelector(".anime1-custom-count-wrap");
   let input = titleCell.querySelector(".anime1-custom-count-input");
 
@@ -150,7 +220,7 @@ function ensureAnime1Controls(row, titleCell, key) {
     label.style.fontSize = "12px";
 
     input = createCountInput(key);
-    const hideButton = createHideButton(key, row, titleCell);
+    const hideButton = createHideButton(key, cat, row, titleCell);
 
     wrap.appendChild(label);
     wrap.appendChild(input);
@@ -164,17 +234,15 @@ function ensureAnime1Controls(row, titleCell, key) {
 function applyAnime1Counts() {
   const rows = document.querySelectorAll("#table-list tbody tr");
   rows.forEach((row) => {
-    const key = getAnime1RowKey(row);
-    if (!key) return;
+    const rowInfo = getAnime1RowInfo(row);
+    if (!rowInfo) return;
+    const { key, cat, titleCell } = rowInfo;
 
-    const titleCell = row.querySelector("td:first-child");
-    if (!titleCell) return;
-
-    const { wrap, input } = ensureAnime1Controls(row, titleCell, key);
+    const { wrap, input } = ensureAnime1Controls(row, titleCell, key, cat);
     const savedValue = anime1CountMap[key];
     input.value = String(typeof savedValue === "number" ? savedValue : 0);
 
-    const hidden = !!anime1HiddenTitleMap[key];
+    const hidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
     applyAnime1TitleHidden(row, titleCell, hidden);
 
     const hideButton = wrap.querySelector(".anime1-hide-title-btn");
@@ -186,6 +254,7 @@ function applyAnime1Counts() {
 
 function initAnime1PageScript() {
   loadAnime1StateAndApply();
+  requestAnime1VisibilityPull();
   if (anime1Ready) return;
   anime1Ready = true;
 
@@ -215,6 +284,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.anime1HiddenTitleByKey) {
     anime1HiddenTitleMap = changes.anime1HiddenTitleByKey.newValue || {};
     scheduleApplyAnime1Counts();
+  }
+  if (changes.anime1HiddenCatByCat) {
+    anime1HiddenCatMap = changes.anime1HiddenCatByCat.newValue || {};
+    scheduleApplyAnime1Counts();
+  }
+  if (changes.supabaseSession) {
+    requestAnime1VisibilityPull();
   }
 });
 

@@ -2,6 +2,8 @@ const SUPABASE_URL = "https://nkqujduwuxulmqioezej.supabase.co";
 const SUPABASE_KEY = "sb_publishable_ZB3VrxWap8UFuP3bgq-DIw_lbHWH_JF";
 
 const STORAGE_SESSION_KEY = "supabaseSession";
+const STORAGE_ANIME1_HIDDEN_CAT_KEY = "anime1HiddenCatByCat";
+const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
 const OAUTH_REDIRECT_PATH = "supabase-auth";
 
 function nowSeconds() {
@@ -68,6 +70,12 @@ async function fetchUser(accessToken) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) return null;
   return data;
+}
+
+async function saveAnime1HiddenCatMap(map) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_ANIME1_HIDDEN_CAT_KEY]: map }, resolve);
+  });
 }
 
 async function refreshSession(session) {
@@ -247,6 +255,78 @@ function buildOAuthUrl(provider) {
   return authUrl.toString();
 }
 
+async function pullAnime1Visibility() {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show&user_id=eq.${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        Accept: "application/json",
+      },
+    }
+  );
+
+  const data = await response.json().catch(() => []);
+  if (!response.ok) {
+    return { ok: false, error: data?.message || "Fetch anime1 visibility failed" };
+  }
+
+  const hiddenMap = {};
+  data.forEach((row) => {
+    if (row?.cat === undefined || row?.cat === null) return;
+    hiddenMap[String(row.cat)] = row.show === "hide";
+  });
+
+  await saveAnime1HiddenCatMap(hiddenMap);
+  return { ok: true, count: data.length };
+}
+
+async function upsertAnime1Visibility(cat, show) {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const catNumber = Number.parseInt(String(cat), 10);
+  if (!Number.isInteger(catNumber) || catNumber < 0) {
+    return { ok: false, error: "invalid_cat" };
+  }
+
+  const nextShow = show === "hide" ? "hide" : "show";
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?on_conflict=user_id,cat`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        cat: catNumber,
+        show: nextShow,
+        updated_at: new Date().toISOString(),
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return { ok: false, error: data?.message || "Upsert anime1 visibility failed" };
+  }
+
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -274,6 +354,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "auth:signout": {
           await signOut();
           sendResponse({ ok: true });
+          return;
+        }
+        case "anime1:visibilityPull": {
+          const result = await pullAnime1Visibility();
+          sendResponse(result);
+          return;
+        }
+        case "anime1:visibilityUpsert": {
+          const result = await upsertAnime1Visibility(message.cat, message.show);
+          sendResponse(result);
           return;
         }
         default:
