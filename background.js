@@ -3,6 +3,7 @@ const SUPABASE_KEY = "sb_publishable_ZB3VrxWap8UFuP3bgq-DIw_lbHWH_JF";
 
 const STORAGE_SESSION_KEY = "supabaseSession";
 const STORAGE_ANIME1_HIDDEN_CAT_KEY = "anime1HiddenCatByCat";
+const STORAGE_ANIME1_FOLLOWED_CAT_KEY = "anime1FollowedCatByCat";
 const STORAGE_ANIME1_COUNT_CAT_KEY = "anime1CountByCat";
 const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
 const OAUTH_REDIRECT_PATH = "supabase-auth";
@@ -79,9 +80,39 @@ async function saveAnime1HiddenCatMap(map) {
   });
 }
 
+async function getAnime1HiddenCatMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_ANIME1_HIDDEN_CAT_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_ANIME1_HIDDEN_CAT_KEY] || {});
+    });
+  });
+}
+
+async function saveAnime1FollowedCatMap(map) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_ANIME1_FOLLOWED_CAT_KEY]: map }, resolve);
+  });
+}
+
+async function getAnime1FollowedCatMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_ANIME1_FOLLOWED_CAT_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_ANIME1_FOLLOWED_CAT_KEY] || {});
+    });
+  });
+}
+
 async function saveAnime1CountCatMap(map) {
   return new Promise((resolve) => {
     chrome.storage.local.set({ [STORAGE_ANIME1_COUNT_CAT_KEY]: map }, resolve);
+  });
+}
+
+async function getAnime1CountCatMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_ANIME1_COUNT_CAT_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_ANIME1_COUNT_CAT_KEY] || {});
+    });
   });
 }
 
@@ -287,19 +318,28 @@ async function pullAnime1Visibility() {
   }
 
   const hiddenMap = {};
+  const followedMap = {};
   const countMap = {};
   data.forEach((row) => {
     if (row?.cat === undefined || row?.cat === null) return;
     const cat = String(row.cat);
     hiddenMap[cat] = row.show === "hide";
+    followedMap[cat] = row.show === "follow";
     if (row.count !== undefined && row.count !== null) {
       const count = Number.parseInt(String(row.count), 10);
       countMap[cat] = Number.isNaN(count) || count < 0 ? 0 : count;
     }
   });
 
-  await saveAnime1HiddenCatMap(hiddenMap);
-  await saveAnime1CountCatMap(countMap);
+  const [currentHiddenMap, currentFollowedMap, currentCountMap] = await Promise.all([
+    getAnime1HiddenCatMap(),
+    getAnime1FollowedCatMap(),
+    getAnime1CountCatMap(),
+  ]);
+
+  await saveAnime1HiddenCatMap({ ...currentHiddenMap, ...hiddenMap });
+  await saveAnime1FollowedCatMap({ ...currentFollowedMap, ...followedMap });
+  await saveAnime1CountCatMap({ ...currentCountMap, ...countMap });
   return { ok: true, count: data.length };
 }
 
@@ -313,7 +353,7 @@ async function upsertAnime1Visibility(cat, show) {
     return { ok: false, error: "invalid_cat" };
   }
 
-  const nextShow = show === "hide" ? "hide" : "show";
+  const nextShow = ["hide", "follow"].includes(show) ? show : "show";
   const response = await fetch(
     `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?on_conflict=user_id,cat`,
     {

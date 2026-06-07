@@ -2,6 +2,7 @@ let anime1CountMap = {};
 let anime1CountByCatMap = {};
 let anime1HiddenTitleMap = {};
 let anime1HiddenCatMap = {};
+let anime1FollowedCatMap = {};
 let anime1Ready = false;
 let anime1ApplyScheduled = false;
 let anime1ListObserver = null;
@@ -36,6 +37,11 @@ function saveAnime1CatHidden(cat, hidden) {
   chrome.storage.local.set({ anime1HiddenCatByCat: anime1HiddenCatMap });
 }
 
+function saveAnime1CatFollowed(cat, followed) {
+  anime1FollowedCatMap = { ...anime1FollowedCatMap, [cat]: followed };
+  chrome.storage.local.set({ anime1FollowedCatByCat: anime1FollowedCatMap });
+}
+
 function loadAnime1StateAndApply() {
   chrome.storage.local.get(
     {
@@ -43,12 +49,14 @@ function loadAnime1StateAndApply() {
       anime1CountByCat: {},
       anime1HiddenTitleByKey: {},
       anime1HiddenCatByCat: {},
+      anime1FollowedCatByCat: {},
     },
     (result) => {
       anime1CountMap = result.anime1TitleCountByKey || {};
       anime1CountByCatMap = result.anime1CountByCat || {};
       anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
       anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
+      anime1FollowedCatMap = result.anime1FollowedCatByCat || {};
       scheduleApplyAnime1Counts();
     }
   );
@@ -244,6 +252,25 @@ async function syncAnime1Visibility(cat, hidden) {
   }
 }
 
+async function syncAnime1Followed(cat, followed) {
+  if (!cat) return { ok: true, localOnly: true };
+  const result = await chrome.runtime
+    .sendMessage({
+      type: "anime1:visibilityUpsert",
+      cat,
+      show: followed ? "follow" : "show",
+    })
+    .catch((error) => ({
+      ok: false,
+      error: error?.message || "sendMessage_failed",
+    }));
+
+  if (!result?.ok && result?.error !== "not_signed_in") {
+    console.warn("anime1:followUpsert failed", result?.error || result);
+  }
+  return result;
+}
+
 function requestAnime1VisibilityPull() {
   const now = Date.now();
   if (now - anime1RemoteSyncAt < 10000) return;
@@ -286,6 +313,7 @@ function createHideButton(key, cat, row, titleCell) {
     const nextHidden = !currentHidden;
     if (cat) {
       saveAnime1CatHidden(cat, nextHidden);
+      if (nextHidden) saveAnime1CatFollowed(cat, false);
       syncAnime1Visibility(cat, nextHidden);
     } else {
       saveAnime1TitleHidden(key, nextHidden);
@@ -295,6 +323,60 @@ function createHideButton(key, cat, row, titleCell) {
   });
 
   return hideButton;
+}
+
+function createFollowButton(cat) {
+  const followButton = document.createElement("button");
+  followButton.type = "button";
+  followButton.className = "anime1-follow-title-btn";
+  followButton.textContent = "追蹤";
+  followButton.style.height = "22px";
+  followButton.style.padding = "0 6px";
+  followButton.style.fontSize = "12px";
+  followButton.style.lineHeight = "20px";
+  followButton.style.border = "1px solid #cbd5e1";
+  followButton.style.borderRadius = "4px";
+  followButton.style.background = "#ffffff";
+  followButton.style.cursor = "pointer";
+  followButton.style.pointerEvents = "auto";
+  followButton.style.position = "relative";
+  followButton.style.zIndex = "2";
+
+  bindInteractiveControlEvents(followButton, true);
+
+  followButton.addEventListener("click", async () => {
+    if (!cat) return;
+    const previousFollowed = !!anime1FollowedCatMap[cat];
+    const previousHidden = !!anime1HiddenCatMap[cat];
+    const nextFollowed = !anime1FollowedCatMap[cat];
+
+    followButton.disabled = true;
+    saveAnime1CatFollowed(cat, nextFollowed);
+    if (nextFollowed) saveAnime1CatHidden(cat, false);
+    updateFollowButtonStyle(followButton, nextFollowed);
+
+    const result = await syncAnime1Followed(cat, nextFollowed);
+    if (!result?.ok && result?.error !== "not_signed_in") {
+      saveAnime1CatFollowed(cat, previousFollowed);
+      saveAnime1CatHidden(cat, previousHidden);
+      updateFollowButtonStyle(followButton, previousFollowed);
+      followButton.textContent = "Error";
+      setTimeout(() => {
+        updateFollowButtonStyle(followButton, previousFollowed);
+      }, 1200);
+    }
+
+    followButton.disabled = false;
+  });
+
+  return followButton;
+}
+
+function updateFollowButtonStyle(followButton, followed) {
+  followButton.textContent = followed ? "已追蹤" : "追蹤";
+  followButton.style.background = followed ? "#dcfce7" : "#ffffff";
+  followButton.style.borderColor = followed ? "#22c55e" : "#cbd5e1";
+  followButton.style.color = followed ? "#166534" : "";
 }
 
 function createAniGamerSearchButton(title) {
@@ -358,12 +440,14 @@ function ensureAnime1Controls(row, titleCell, key, cat, title) {
     input = createCountInput(key, cat);
     const saveButton = createCountSaveButton(input, key, cat);
     const hideButton = createHideButton(key, cat, row, titleCell);
+    const followButton = createFollowButton(cat);
     const aniGamerButton = createAniGamerSearchButton(title);
 
     wrap.appendChild(label);
     wrap.appendChild(input);
     wrap.appendChild(saveButton);
     wrap.appendChild(hideButton);
+    wrap.appendChild(followButton);
     wrap.appendChild(aniGamerButton);
     titleCell.appendChild(wrap);
   }
@@ -390,6 +474,10 @@ function applyAnime1Counts() {
     const hideButton = wrap.querySelector(".anime1-hide-title-btn");
     if (hideButton) {
       hideButton.textContent = hidden ? "顯示" : "隱藏";
+    }
+    const followButton = wrap.querySelector(".anime1-follow-title-btn");
+    if (followButton) {
+      updateFollowButtonStyle(followButton, cat ? !!anime1FollowedCatMap[cat] : false);
     }
   });
 }
@@ -433,6 +521,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.anime1HiddenCatByCat) {
     anime1HiddenCatMap = changes.anime1HiddenCatByCat.newValue || {};
+    scheduleApplyAnime1Counts();
+  }
+  if (changes.anime1FollowedCatByCat) {
+    anime1FollowedCatMap = changes.anime1FollowedCatByCat.newValue || {};
     scheduleApplyAnime1Counts();
   }
   if (changes.supabaseSession) {

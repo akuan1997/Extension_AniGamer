@@ -1,7 +1,7 @@
 create table if not exists public.anime1_visibility (
   user_id uuid not null references auth.users (id) on delete cascade,
   cat integer not null,
-  "show" text not null default 'show' check ("show" in ('hide', 'show')),
+  "show" text not null default 'show' check ("show" in ('hide', 'show', 'follow')),
   "count" integer not null default 0 check ("count" >= 0),
   updated_at timestamptz not null default now(),
   primary key (user_id, cat)
@@ -12,6 +12,12 @@ add column if not exists "count" integer not null default 0 check ("count" >= 0)
 
 alter table public.anime1_visibility
 alter column "show" set default 'show';
+
+alter table public.anime1_visibility
+drop constraint if exists anime1_visibility_show_check;
+
+alter table public.anime1_visibility
+add constraint anime1_visibility_show_check check ("show" in ('hide', 'show', 'follow'));
 
 alter table public.anime1_visibility enable row level security;
 

@@ -5,7 +5,7 @@ Chrome extension for adding lightweight tracking controls to Anime1 list pages.
 ## Features
 
 - Adds a numeric counter beside each Anime1 title.
-- Adds a hide/show toggle beside each Anime1 title.
+- Adds hide/show and followed toggles beside each Anime1 title.
 - Stores Anime1 counters in `chrome.storage.local`.
 - Syncs Anime1 hide/show state and saved counts to Supabase by `cat`.
 - Supports Supabase sign-in through GitHub OAuth.
@@ -40,6 +40,7 @@ The extension writes rows to `anime1_visibility` like:
 ```text
 cat | show | count
 1886 | hide | 3
+1887 | follow | 1
 ```
 
 ## Installation
