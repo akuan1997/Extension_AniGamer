@@ -1,8 +1,10 @@
 let anime1CountMap = {};
 let anime1CountByCatMap = {};
+let anime1FinishedByKeyMap = {};
 let anime1HiddenTitleMap = {};
 let anime1HiddenCatMap = {};
 let anime1FollowedCatMap = {};
+let anime1FollowedItemByCatMap = {};
 let anime1Ready = false;
 let anime1ApplyScheduled = false;
 let anime1ListObserver = null;
@@ -13,9 +15,11 @@ let anime1InfiniteScrollReady = false;
 let anime1InfiniteScrollPages = 1;
 let anime1InfiniteScrollResetScheduled = false;
 let anime1ReorderingRows = false;
-let anime1DeferredHiddenRows = [];
+let anime1DeferredBottomRows = [];
 let anime1InfiniteScrollIntersecting = false;
 let anime1InfiniteScrollContinueScheduled = false;
+let anime1InfiniteScrollPositionCheckScheduled = false;
+let anime1InfiniteScrollResizeObserver = null;
 let anime1FollowedOnly = false;
 let anime1ListIndexPromise = null;
 let anime1FollowedModeRows = null;
@@ -40,6 +44,111 @@ function updateAnime1InfiniteScrollStatus(text, isError = false) {
   if (!status) return;
   status.textContent = text;
   status.style.color = isError ? "#dc2626" : "";
+}
+
+function hideAnime1MetadataColumns() {
+  document
+    .querySelectorAll(
+      "#table-list tr > :nth-child(5), #table-list tr > :nth-child(6), #table-list tr > :nth-child(7)"
+    )
+    .forEach((cell) => {
+      cell.style.display = "none";
+    });
+}
+
+function ensureAnime1TableLayoutStyles() {
+  if (document.getElementById("anime1-table-layout-styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "anime1-table-layout-styles";
+  style.textContent = `
+    #table-list {
+      table-layout: fixed !important;
+      width: 100% !important;
+    }
+    #table-list th,
+    #table-list td {
+      box-sizing: border-box;
+    }
+    #table-list tr > :nth-child(1) {
+      width: 43% !important;
+      padding-left: 12px !important;
+      padding-right: 12px !important;
+    }
+    #table-list tr > :nth-child(2) {
+      width: 11% !important;
+      padding-left: 10px !important;
+      padding-right: 10px !important;
+    }
+    #table-list tr > :nth-child(3) {
+      width: 14% !important;
+      padding-left: 10px !important;
+      padding-right: 10px !important;
+    }
+    #table-list tr > :nth-child(4) {
+      width: 32% !important;
+      padding-left: 10px !important;
+      padding-right: 10px !important;
+    }
+    #table-list .anime1-follow-cell,
+    #table-list .anime1-progress-cell {
+      white-space: nowrap;
+    }
+    #table-list .anime1-follow-cell {
+      text-align: center;
+    }
+    #table-list tbody td {
+      vertical-align: middle;
+    }
+    #table-list .anime1-title-actions-wrap {
+      margin-top: 4px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureAnime1FollowColumn(row) {
+  ensureAnime1TableLayoutStyles();
+  const headerRow = document.querySelector("#table-list thead tr");
+  if (headerRow && !headerRow.querySelector(".anime1-follow-header")) {
+    const header = document.createElement("th");
+    header.className = "anime1-follow-header";
+    header.textContent = "追蹤";
+    header.style.whiteSpace = "nowrap";
+    headerRow.insertBefore(header, headerRow.children[1] || null);
+  }
+
+  let followCell = row.querySelector(":scope > .anime1-follow-cell");
+  if (!followCell) {
+    followCell = document.createElement("td");
+    followCell.className = "anime1-follow-cell";
+    followCell.style.whiteSpace = "nowrap";
+    row.insertBefore(followCell, row.children[1] || null);
+  }
+
+  return followCell;
+}
+
+function ensureAnime1ProgressColumn(row) {
+  ensureAnime1TableLayoutStyles();
+  const headerRow = document.querySelector("#table-list thead tr");
+  if (headerRow && !headerRow.querySelector(".anime1-progress-header")) {
+    const header = document.createElement("th");
+    header.className = "anime1-progress-header";
+    header.textContent = "進度";
+    header.style.whiteSpace = "nowrap";
+    headerRow.insertBefore(header, headerRow.children[3] || null);
+  }
+
+  let progressCell = row.querySelector(":scope > .anime1-progress-cell");
+  if (!progressCell) {
+    progressCell = document.createElement("td");
+    progressCell.className = "anime1-progress-cell";
+    progressCell.style.whiteSpace = "nowrap";
+    row.insertBefore(progressCell, row.children[3] || null);
+  }
+
+  return progressCell;
 }
 
 function getAnime1FollowedCount() {
@@ -71,13 +180,19 @@ function getAnime1ListIndex() {
       })
       .then((items) => {
         const index = new Map();
+        const urlIndex = new Map();
         items.forEach((item) => {
-          const cat = item?.[0];
-          if (cat !== null && cat !== undefined && cat !== "") {
-            index.set(String(cat), item);
+          const normalizedItem = normalizeAnime1ListItem(item);
+          if (!normalizedItem) return;
+
+          if (normalizedItem.cat) {
+            index.set(normalizedItem.cat, normalizedItem);
+          }
+          if (normalizedItem.href) {
+            urlIndex.set(normalizedItem.href, normalizedItem);
           }
         });
-        return { index, items };
+        return { index, urlIndex };
       })
       .catch((error) => {
         anime1ListIndexPromise = null;
@@ -88,15 +203,43 @@ function getAnime1ListIndex() {
   return anime1ListIndexPromise;
 }
 
+function normalizeAnime1ListItem(item) {
+  if (!Array.isArray(item)) return null;
+
+  const [rawCat, rawTitle, episode, year, season, subtitleGroup] = item;
+  const container = document.createElement("div");
+  container.innerHTML = String(rawTitle || "");
+  const embeddedLink = container.querySelector("a[href]");
+  const embeddedHref = embeddedLink?.getAttribute("href") || "";
+  const embeddedCat = getAnime1CatFromHref(embeddedHref);
+  const cat = rawCat ? String(rawCat) : embeddedCat;
+  const href = normalizeAnime1Url(
+    embeddedHref || (cat ? `https://anime1.me/?cat=${cat}` : "")
+  );
+  const title = (embeddedLink?.textContent || container.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return {
+    cat,
+    href,
+    title,
+    episode,
+    year,
+    season,
+    subtitleGroup,
+  };
+}
+
 function createAnime1RowFromListItem(item, rowIndex = 0) {
-  const [cat, title, episode, year, season, subtitleGroup] = item;
+  const { cat, href, title, episode, year, season, subtitleGroup } = item;
   const row = document.createElement("tr");
   row.className = rowIndex % 2 === 0 ? "even" : "odd";
   [title, episode, year, season, subtitleGroup].forEach((value, index) => {
     const cell = document.createElement("td");
     if (index === 0) {
       const link = document.createElement("a");
-      link.href = `https://anime1.me/?cat=${encodeURIComponent(cat)}`;
+      link.href = href || `https://anime1.me/?cat=${encodeURIComponent(cat)}`;
       link.textContent = value || "";
       cell.appendChild(link);
     } else {
@@ -114,13 +257,36 @@ async function showAnime1FollowedRows() {
   updateAnime1InfiniteScrollStatus("正在建立追蹤動畫索引...");
 
   try {
-    const { index } = await getAnime1ListIndex();
+    const { index, urlIndex } = await getAnime1ListIndex();
     if (!anime1FollowedOnly) return;
 
     const followedItems = Object.entries(anime1FollowedCatMap)
       .filter(([, followed]) => followed)
-      .map(([cat]) => index.get(cat))
-      .filter(Boolean);
+      .map(([cat]) => {
+        const metadata = anime1FollowedItemByCatMap[cat];
+        const metadataHref = normalizeAnime1Url(metadata?.href);
+        return (
+          (metadataHref ? urlIndex.get(metadataHref) : null) ||
+          index.get(cat)
+        );
+      })
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftYear = Number.parseInt(left?.year, 10) || 0;
+        const rightYear = Number.parseInt(right?.year, 10) || 0;
+        const yearDifference = rightYear - leftYear;
+        if (yearDifference !== 0) return yearDifference;
+
+        const seasonPriority = {
+          秋: 4,
+          夏: 3,
+          春: 2,
+          冬: 1,
+        };
+        const leftSeasonPriority = seasonPriority[left?.season] || 0;
+        const rightSeasonPriority = seasonPriority[right?.season] || 0;
+        return rightSeasonPriority - leftSeasonPriority;
+      });
 
     const fragment = document.createDocumentFragment();
     const rows = followedItems.map((item, rowIndex) => {
@@ -153,7 +319,7 @@ function restoreAnime1RowsAfterFollowedMode() {
   anime1FollowedModeRows.forEach((row) => fragment.appendChild(row));
   anime1ReorderingRows = true;
   tbody.replaceChildren(fragment);
-  anime1DeferredHiddenRows = anime1FollowedModeDeferredRows || [];
+  anime1DeferredBottomRows = anime1FollowedModeDeferredRows || [];
   anime1FollowedModeRows = null;
   anime1FollowedModeDeferredRows = null;
   applyAnime1Counts();
@@ -188,8 +354,8 @@ function initAnime1FollowedFilterButton(tableWrapper) {
 
     if (anime1FollowedOnly) {
       anime1FollowedModeRows = tbody ? Array.from(tbody.children) : [];
-      anime1FollowedModeDeferredRows = [...anime1DeferredHiddenRows];
-      anime1DeferredHiddenRows = [];
+      anime1FollowedModeDeferredRows = [...anime1DeferredBottomRows];
+      anime1DeferredBottomRows = [];
       showAnime1FollowedRows();
     } else {
       restoreAnime1RowsAfterFollowedMode();
@@ -216,8 +382,15 @@ function continueAnime1InfiniteScrollIfNeeded() {
 
   schedule(() => {
     anime1InfiniteScrollContinueScheduled = false;
+    const sentinel = document.getElementById("anime1-infinite-scroll-sentinel");
+    const sentinelRect = sentinel?.getBoundingClientRect();
+    const sentinelIsNearViewport =
+      !!sentinelRect &&
+      sentinelRect.top <= window.innerHeight + 1000 &&
+      sentinelRect.bottom >= -1000;
+
     if (
-      anime1InfiniteScrollIntersecting &&
+      (anime1InfiniteScrollIntersecting || sentinelIsNearViewport) &&
       !anime1FollowedOnly &&
       !anime1InfiniteScrollLoading &&
       !isAnime1PaginationEnd(getAnime1PaginationNextButton())
@@ -225,6 +398,16 @@ function continueAnime1InfiniteScrollIfNeeded() {
       loadNextAnime1Page();
     }
   }, { timeout: 250 });
+}
+
+function scheduleAnime1InfiniteScrollPositionCheck() {
+  if (anime1InfiniteScrollPositionCheckScheduled) return;
+  anime1InfiniteScrollPositionCheckScheduled = true;
+
+  requestAnimationFrame(() => {
+    anime1InfiniteScrollPositionCheckScheduled = false;
+    continueAnime1InfiniteScrollIfNeeded();
+  });
 }
 
 function stabilizeAnime1TableDuringLoad() {
@@ -350,10 +533,13 @@ async function loadNextAnime1Page() {
   }
 
   requestAnimationFrame(() => {
-    applyAnime1Counts(nextPageRows);
-    releaseStableTableHeight();
-    anime1InfiniteScrollLoading = false;
-    continueAnime1InfiniteScrollIfNeeded();
+    try {
+      applyAnime1Counts(nextPageRows);
+    } finally {
+      releaseStableTableHeight();
+      anime1InfiniteScrollLoading = false;
+      scheduleAnime1InfiniteScrollPositionCheck();
+    }
   });
 }
 
@@ -411,6 +597,27 @@ function initAnime1InfiniteScroll() {
     { rootMargin: "0px 0px 1000px 0px" }
   );
   anime1InfiniteScrollObserver.observe(sentinel);
+
+  window.addEventListener(
+    "scroll",
+    scheduleAnime1InfiniteScrollPositionCheck,
+    { passive: true }
+  );
+  window.addEventListener(
+    "resize",
+    scheduleAnime1InfiniteScrollPositionCheck,
+    { passive: true }
+  );
+
+  if ("ResizeObserver" in window) {
+    anime1InfiniteScrollResizeObserver = new ResizeObserver(
+      scheduleAnime1InfiniteScrollPositionCheck
+    );
+    anime1InfiniteScrollResizeObserver.observe(tableWrapper);
+    anime1InfiniteScrollResizeObserver.observe(document.body);
+  }
+
+  scheduleAnime1InfiniteScrollPositionCheck();
 }
 
 function scheduleApplyAnime1Counts() {
@@ -419,6 +626,7 @@ function scheduleApplyAnime1Counts() {
   requestAnimationFrame(() => {
     anime1ApplyScheduled = false;
     applyAnime1Counts();
+    hideAnime1MetadataColumns();
     initAnime1InfiniteScroll();
   });
 }
@@ -431,6 +639,16 @@ function saveAnime1Count(key, value) {
 function saveAnime1CatCount(cat, value) {
   anime1CountByCatMap = { ...anime1CountByCatMap, [cat]: value };
   chrome.storage.local.set({ anime1CountByCat: anime1CountByCatMap });
+}
+
+function saveAnime1Finished(key, finished) {
+  anime1FinishedByKeyMap = {
+    ...anime1FinishedByKeyMap,
+    [key]: finished,
+  };
+  chrome.storage.local.set({
+    anime1FinishedByKey: anime1FinishedByKeyMap,
+  });
 }
 
 function saveAnime1TitleHidden(key, hidden) {
@@ -448,21 +666,44 @@ function saveAnime1CatFollowed(cat, followed) {
   chrome.storage.local.set({ anime1FollowedCatByCat: anime1FollowedCatMap });
 }
 
+function saveAnime1FollowedItem(cat, item) {
+  if (!cat) return;
+
+  const nextMap = { ...anime1FollowedItemByCatMap };
+  if (item?.href) {
+    nextMap[cat] = {
+      href: normalizeAnime1Url(item.href),
+      title: item.title || "",
+    };
+  } else {
+    delete nextMap[cat];
+  }
+
+  anime1FollowedItemByCatMap = nextMap;
+  chrome.storage.local.set({
+    anime1FollowedItemByCat: anime1FollowedItemByCatMap,
+  });
+}
+
 function loadAnime1StateAndApply() {
   chrome.storage.local.get(
     {
       anime1TitleCountByKey: {},
       anime1CountByCat: {},
+      anime1FinishedByKey: {},
       anime1HiddenTitleByKey: {},
       anime1HiddenCatByCat: {},
       anime1FollowedCatByCat: {},
+      anime1FollowedItemByCat: {},
     },
     (result) => {
       anime1CountMap = result.anime1TitleCountByKey || {};
       anime1CountByCatMap = result.anime1CountByCat || {};
+      anime1FinishedByKeyMap = result.anime1FinishedByKey || {};
       anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
       anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
       anime1FollowedCatMap = result.anime1FollowedCatByCat || {};
+      anime1FollowedItemByCatMap = result.anime1FollowedItemByCat || {};
       scheduleApplyAnime1Counts();
     }
   );
@@ -500,19 +741,34 @@ function getAnime1RowInfo(row) {
   const cat = getAnime1CatFromHref(href);
   const title = (link?.textContent || titleCell.textContent || "").replace(/\s+/g, " ").trim();
   if (normalizedUrl) {
-    return { key: `anime1:url:${normalizedUrl}`, cat, title, titleCell };
+    return {
+      key: `anime1:url:${normalizedUrl}`,
+      cat,
+      title,
+      href: normalizedUrl,
+      titleCell,
+    };
   }
 
   const titleText = title;
   if (!titleText) return null;
-  return { key: `anime1:title:${titleText}`, cat, title: titleText, titleCell };
+  return {
+    key: `anime1:title:${titleText}`,
+    cat,
+    title: titleText,
+    href: null,
+    titleCell,
+  };
 }
 
-function applyAnime1TitleHidden(row, titleCell, hidden) {
+function applyAnime1TitleHidden(row, titleCell, hidden, followed = false) {
   row.style.display = "";
   const titleLink = titleCell.querySelector("a");
   const target = titleLink || titleCell;
-  target.style.textDecoration = hidden ? "line-through" : "";
+  const showFollowedStyle = followed && !anime1FollowedOnly;
+  target.style.textDecoration =
+    hidden || showFollowedStyle ? "line-through" : "";
+  target.style.color = showFollowedStyle ? "#9ca3af" : "";
   target.style.opacity = hidden ? "0.6" : "";
 }
 
@@ -640,6 +896,69 @@ function createCountSaveButton(input, key, cat) {
   return saveButton;
 }
 
+function updateFinishedButtonStyle(
+  finishedButton,
+  input,
+  saveButton,
+  finished
+) {
+  const progressWrap = finishedButton.closest(".anime1-custom-count-wrap");
+  const label = progressWrap?.querySelector(".anime1-count-label");
+
+  finishedButton.textContent = finished ? "FINISHED" : "Finish";
+  finishedButton.setAttribute("aria-pressed", String(finished));
+  finishedButton.title = finished ? "取消已看完" : "標記為已看完";
+  finishedButton.style.background = finished ? "#16a34a" : "#ffffff";
+  finishedButton.style.borderColor = finished ? "#22c55e" : "#cbd5e1";
+  finishedButton.style.color = finished ? "#ffffff" : "";
+  finishedButton.style.fontWeight = finished ? "700" : "";
+
+  if (label) {
+    label.style.display = finished ? "none" : "";
+  }
+  input.style.display = finished ? "none" : "";
+  saveButton.style.display = finished ? "none" : "";
+  input.disabled = finished;
+  saveButton.disabled = finished;
+}
+
+function createFinishedButton(input, saveButton, key) {
+  const finishedButton = document.createElement("button");
+  finishedButton.type = "button";
+  finishedButton.className = "anime1-finished-btn";
+  finishedButton.style.height = "22px";
+  finishedButton.style.padding = "0 6px";
+  finishedButton.style.fontSize = "12px";
+  finishedButton.style.lineHeight = "20px";
+  finishedButton.style.border = "1px solid #cbd5e1";
+  finishedButton.style.borderRadius = "4px";
+  finishedButton.style.cursor = "pointer";
+  finishedButton.style.pointerEvents = "auto";
+  finishedButton.style.position = "relative";
+  finishedButton.style.zIndex = "2";
+
+  bindInteractiveControlEvents(finishedButton, true);
+
+  finishedButton.addEventListener("click", () => {
+    const nextFinished = !anime1FinishedByKeyMap[key];
+    saveAnime1Finished(key, nextFinished);
+    updateFinishedButtonStyle(
+      finishedButton,
+      input,
+      saveButton,
+      nextFinished
+    );
+  });
+
+  updateFinishedButtonStyle(
+    finishedButton,
+    input,
+    saveButton,
+    !!anime1FinishedByKeyMap[key]
+  );
+  return finishedButton;
+}
+
 async function syncAnime1Visibility(cat, hidden) {
   if (!cat) return;
   const result = await chrome.runtime
@@ -719,19 +1038,27 @@ function createHideButton(key, cat, row, titleCell) {
     const nextHidden = !currentHidden;
     if (cat) {
       saveAnime1CatHidden(cat, nextHidden);
-      if (nextHidden) saveAnime1CatFollowed(cat, false);
+      if (nextHidden) {
+        saveAnime1CatFollowed(cat, false);
+        saveAnime1FollowedItem(cat, null);
+      }
       syncAnime1Visibility(cat, nextHidden);
     } else {
       saveAnime1TitleHidden(key, nextHidden);
     }
-    applyAnime1TitleHidden(row, titleCell, nextHidden);
+    applyAnime1TitleHidden(
+      row,
+      titleCell,
+      nextHidden,
+      cat ? !!anime1FollowedCatMap[cat] : false
+    );
     hideButton.textContent = nextHidden ? "顯示" : "隱藏";
   });
 
   return hideButton;
 }
 
-function createFollowButton(cat) {
+function createFollowButton(cat, row, titleCell) {
   const followButton = document.createElement("button");
   followButton.type = "button";
   followButton.className = "anime1-follow-title-btn";
@@ -752,20 +1079,39 @@ function createFollowButton(cat) {
 
   followButton.addEventListener("click", async () => {
     if (!cat) return;
+    const currentRowInfo = getAnime1RowInfo(row);
     const previousFollowed = !!anime1FollowedCatMap[cat];
     const previousHidden = !!anime1HiddenCatMap[cat];
+    const previousItem = anime1FollowedItemByCatMap[cat];
     const nextFollowed = !anime1FollowedCatMap[cat];
 
     followButton.disabled = true;
     saveAnime1CatFollowed(cat, nextFollowed);
+    saveAnime1FollowedItem(
+      cat,
+      nextFollowed
+        ? {
+            href: currentRowInfo?.href,
+            title: currentRowInfo?.title,
+          }
+        : null
+    );
     if (nextFollowed) saveAnime1CatHidden(cat, false);
     updateFollowButtonStyle(followButton, nextFollowed);
+    applyAnime1TitleHidden(row, titleCell, false, nextFollowed);
 
     const result = await syncAnime1Followed(cat, nextFollowed);
     if (!result?.ok && result?.error !== "not_signed_in") {
       saveAnime1CatFollowed(cat, previousFollowed);
+      saveAnime1FollowedItem(cat, previousItem);
       saveAnime1CatHidden(cat, previousHidden);
       updateFollowButtonStyle(followButton, previousFollowed);
+      applyAnime1TitleHidden(
+        row,
+        titleCell,
+        previousHidden,
+        previousFollowed
+      );
       followButton.textContent = "Error";
       setTimeout(() => {
         updateFollowButtonStyle(followButton, previousFollowed);
@@ -815,85 +1161,164 @@ function createAniGamerSearchButton(title) {
 }
 
 function ensureAnime1Controls(row, titleCell, key, cat, title) {
-  let wrap = titleCell.querySelector(".anime1-custom-count-wrap");
-  let input = titleCell.querySelector(".anime1-custom-count-input");
+  const followCell = ensureAnime1FollowColumn(row);
+  const progressCell = ensureAnime1ProgressColumn(row);
+  let followWrap = followCell.querySelector(".anime1-follow-control-wrap");
+  let progressWrap = progressCell.querySelector(".anime1-custom-count-wrap");
+  let input = progressCell.querySelector(".anime1-custom-count-input");
+  let saveButton = progressCell.querySelector(".anime1-save-count-btn");
+  let finishedButton = progressCell.querySelector(".anime1-finished-btn");
+  let actionsWrap = titleCell.querySelector(".anime1-title-actions-wrap");
 
-  if (wrap && wrap.dataset.anime1Key !== key) {
-    wrap.remove();
-    wrap = null;
-    input = null;
+  const legacyWrap = titleCell.querySelector(".anime1-custom-count-wrap");
+  if (legacyWrap) {
+    legacyWrap.remove();
   }
 
-  if (!wrap || !input) {
-    wrap = document.createElement("span");
-    wrap.className = "anime1-custom-count-wrap";
-    wrap.dataset.anime1Key = key;
-    wrap.style.display = "inline-flex";
-    wrap.style.alignItems = "center";
-    wrap.style.gap = "4px";
-    wrap.style.marginLeft = "8px";
-    wrap.style.position = "relative";
-    wrap.style.zIndex = "2";
-    wrap.style.pointerEvents = "auto";
+  if (progressWrap && progressWrap.dataset.anime1Key !== key) {
+    progressWrap.remove();
+    progressWrap = null;
+    input = null;
+    saveButton = null;
+    finishedButton = null;
+  }
 
-    bindInteractiveControlEvents(wrap);
+  if (followWrap && followWrap.dataset.anime1Key !== key) {
+    followWrap.remove();
+    followWrap = null;
+  }
+
+  if (actionsWrap && actionsWrap.dataset.anime1Key !== key) {
+    actionsWrap.remove();
+    actionsWrap = null;
+  }
+
+  if (!progressWrap || !input || !saveButton || !finishedButton) {
+    progressWrap?.remove();
+    progressWrap = document.createElement("span");
+    progressWrap.className = "anime1-custom-count-wrap";
+    progressWrap.dataset.anime1Key = key;
+    progressWrap.style.display = "inline-flex";
+    progressWrap.style.alignItems = "center";
+    progressWrap.style.gap = "4px";
+    progressWrap.style.position = "relative";
+    progressWrap.style.zIndex = "2";
+    progressWrap.style.pointerEvents = "auto";
+
+    bindInteractiveControlEvents(progressWrap);
 
     const label = document.createElement("span");
+    label.className = "anime1-count-label";
     label.textContent = "#";
     label.style.opacity = "0.75";
     label.style.fontSize = "12px";
 
     input = createCountInput(key, cat);
-    const saveButton = createCountSaveButton(input, key, cat);
-    const hideButton = createHideButton(key, cat, row, titleCell);
-    const followButton = createFollowButton(cat);
-    const aniGamerButton = createAniGamerSearchButton(title);
+    saveButton = createCountSaveButton(input, key, cat);
+    finishedButton = createFinishedButton(input, saveButton, key);
 
-    wrap.appendChild(label);
-    wrap.appendChild(input);
-    wrap.appendChild(saveButton);
-    wrap.appendChild(hideButton);
-    wrap.appendChild(followButton);
-    wrap.appendChild(aniGamerButton);
-    titleCell.appendChild(wrap);
+    progressWrap.appendChild(label);
+    progressWrap.appendChild(input);
+    progressWrap.appendChild(saveButton);
+    progressWrap.appendChild(finishedButton);
+    progressCell.appendChild(progressWrap);
   }
 
-  return { wrap, input };
+  if (!followWrap) {
+    followWrap = document.createElement("span");
+    followWrap.className = "anime1-follow-control-wrap";
+    followWrap.dataset.anime1Key = key;
+    followWrap.style.display = "inline-flex";
+    followWrap.style.alignItems = "center";
+    followWrap.style.justifyContent = "center";
+    followWrap.style.pointerEvents = "auto";
+
+    bindInteractiveControlEvents(followWrap);
+
+    const followButton = createFollowButton(cat, row, titleCell);
+    followWrap.appendChild(followButton);
+    followCell.appendChild(followWrap);
+  }
+
+  if (!actionsWrap) {
+    actionsWrap = document.createElement("span");
+    actionsWrap.className = "anime1-title-actions-wrap";
+    actionsWrap.dataset.anime1Key = key;
+    actionsWrap.style.display = "inline-flex";
+    actionsWrap.style.alignItems = "center";
+    actionsWrap.style.gap = "4px";
+    actionsWrap.style.marginLeft = "8px";
+    actionsWrap.style.position = "relative";
+    actionsWrap.style.zIndex = "2";
+    actionsWrap.style.pointerEvents = "auto";
+
+    bindInteractiveControlEvents(actionsWrap);
+
+    const hideButton = createHideButton(key, cat, row, titleCell);
+    const aniGamerButton = createAniGamerSearchButton(title);
+
+    actionsWrap.appendChild(hideButton);
+    actionsWrap.appendChild(aniGamerButton);
+    titleCell.appendChild(actionsWrap);
+  }
+
+  return {
+    followWrap,
+    progressWrap,
+    actionsWrap,
+    input,
+    saveButton,
+    finishedButton,
+  };
 }
 
-function moveHiddenAnime1RowsToBottom() {
+function moveCompletedAnime1RowsToBottom() {
   const tbody = document.querySelector("#table-list tbody");
   if (!tbody) return;
 
   const rows = Array.from(
-    new Set([...tbody.children, ...anime1DeferredHiddenRows])
+    new Set([...tbody.children, ...anime1DeferredBottomRows])
   );
-  const visibleRows = [];
+  const normalRows = [];
+  const followedRows = [];
   const hiddenRows = [];
 
   rows.forEach((row) => {
     const rowInfo = getAnime1RowInfo(row);
     if (!rowInfo) {
-      visibleRows.push(row);
+      normalRows.push(row);
       return;
     }
 
     const hidden = rowInfo.cat
       ? !!anime1HiddenCatMap[rowInfo.cat]
       : !!anime1HiddenTitleMap[rowInfo.key];
+    const followed = rowInfo.cat
+      ? !!anime1FollowedCatMap[rowInfo.cat]
+      : false;
     row.style.display =
       anime1FollowedOnly &&
       (!rowInfo.cat || !anime1FollowedCatMap[rowInfo.cat])
         ? "none"
         : "";
-    (hidden ? hiddenRows : visibleRows).push(row);
+
+    if (hidden) {
+      hiddenRows.push(row);
+    } else if (followed) {
+      followedRows.push(row);
+    } else {
+      normalRows.push(row);
+    }
   });
 
   const hasMorePages = !isAnime1PaginationEnd(getAnime1PaginationNextButton());
-  const displayedRows = hasMorePages
-    ? visibleRows
-    : [...visibleRows, ...hiddenRows];
-  anime1DeferredHiddenRows = hasMorePages ? hiddenRows : [];
+  const bottomRows = [...followedRows, ...hiddenRows];
+  const displayedRows =
+    anime1FollowedOnly || !hasMorePages
+      ? [...normalRows, ...bottomRows]
+      : normalRows;
+  anime1DeferredBottomRows =
+    !anime1FollowedOnly && hasMorePages ? bottomRows : [];
 
   const currentRows = Array.from(tbody.children);
   const orderChanged =
@@ -916,31 +1341,54 @@ function applyAnime1Counts(
   rows.forEach((row) => {
     const rowInfo = getAnime1RowInfo(row);
     if (!rowInfo) return;
-    const { key, cat, title, titleCell } = rowInfo;
+    const { key, cat, title, href, titleCell } = rowInfo;
 
-    const { wrap, input } = ensureAnime1Controls(row, titleCell, key, cat, title);
+    const {
+      followWrap,
+      actionsWrap,
+      input,
+      saveButton,
+      finishedButton,
+    } = ensureAnime1Controls(
+      row,
+      titleCell,
+      key,
+      cat,
+      title
+    );
     const savedValue = cat ? anime1CountByCatMap[cat] : anime1CountMap[key];
     if (document.activeElement !== input) {
       input.value = String(typeof savedValue === "number" ? savedValue : 0);
     }
+    updateFinishedButtonStyle(
+      finishedButton,
+      input,
+      saveButton,
+      !!anime1FinishedByKeyMap[key]
+    );
 
     const hidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
-    applyAnime1TitleHidden(row, titleCell, hidden);
+    const followed = cat ? !!anime1FollowedCatMap[cat] : false;
+    if (followed && href && !anime1FollowedItemByCatMap[cat]) {
+      saveAnime1FollowedItem(cat, { href, title });
+    }
+    applyAnime1TitleHidden(row, titleCell, hidden, followed);
     row.style.display =
       anime1FollowedOnly && (!cat || !anime1FollowedCatMap[cat]) ? "none" : "";
 
-    const hideButton = wrap.querySelector(".anime1-hide-title-btn");
+    const hideButton = actionsWrap.querySelector(".anime1-hide-title-btn");
     if (hideButton) {
       hideButton.textContent = hidden ? "顯示" : "隱藏";
     }
-    const followButton = wrap.querySelector(".anime1-follow-title-btn");
+    const followButton = followWrap.querySelector(".anime1-follow-title-btn");
     if (followButton) {
-      updateFollowButtonStyle(followButton, cat ? !!anime1FollowedCatMap[cat] : false);
+      updateFollowButtonStyle(followButton, followed);
     }
   });
 
-  moveHiddenAnime1RowsToBottom();
+  moveCompletedAnime1RowsToBottom();
   updateAnime1FollowedFilterButton();
+  hideAnime1MetadataColumns();
 }
 
 function initAnime1PageScript() {
@@ -974,7 +1422,7 @@ function initAnime1PageScript() {
       !anime1ReorderingRows &&
       !anime1InfiniteScrollLoading
     ) {
-      anime1DeferredHiddenRows = [];
+      anime1DeferredBottomRows = [];
       scheduleAnime1InfiniteScrollReset();
     }
     if (hasRelevantAddedNode && !anime1InfiniteScrollLoading) {
@@ -999,6 +1447,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     anime1CountByCatMap = changes.anime1CountByCat.newValue || {};
     scheduleApplyAnime1Counts();
   }
+  if (changes.anime1FinishedByKey) {
+    anime1FinishedByKeyMap = changes.anime1FinishedByKey.newValue || {};
+    scheduleApplyAnime1Counts();
+  }
   if (changes.anime1HiddenTitleByKey) {
     anime1HiddenTitleMap = changes.anime1HiddenTitleByKey.newValue || {};
     scheduleApplyAnime1Counts();
@@ -1013,6 +1465,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       showAnime1FollowedRows();
     } else {
       scheduleApplyAnime1Counts();
+    }
+  }
+  if (changes.anime1FollowedItemByCat) {
+    anime1FollowedItemByCatMap =
+      changes.anime1FollowedItemByCat.newValue || {};
+    if (anime1FollowedOnly) {
+      showAnime1FollowedRows();
     }
   }
   if (changes.supabaseSession) {

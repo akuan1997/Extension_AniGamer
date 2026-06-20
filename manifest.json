@@ -1,6 +1,6 @@
 {
   "name": "Anime1 Sync",
-  "version": "1.10",
+  "version": "1.23",
   "manifest_version": 3,
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvfemFt5e9eQFvkEhk0XwtViBqcFFYEJs2ueI/DaxXgoY/BgL8kuTwf9qQMBmg0gqJ3EmJ47ZNLJaV7ObxlK/IdhtKuF8VeY54ooZyA8xJknrsz63I0bQJc1AwgnJ4ynuLwkNIJe3Vozo+2ytTEzpMzA8HW/mBxCnDOzenwfFUu4yf7H2k6wfKSTcYejszI/70Bka3BppNGQWXEZC8ZlFgKlLlEQsuXmGOHdr+4CXOVXGLNb1UgS43uxbCebw5zHS6y7SLCKJS++cnE0slGPRfFmHIZddIQBMXA43wJmCNH3PCvoJVjp3L2NDP61/ccA9c0ktT89sJ/izoPaTgn9TwQIDAQAB",
   "description": "Track and hide Anime1 titles with Supabase SSO",
