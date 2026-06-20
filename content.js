@@ -16,6 +16,10 @@ let anime1ReorderingRows = false;
 let anime1DeferredHiddenRows = [];
 let anime1InfiniteScrollIntersecting = false;
 let anime1InfiniteScrollContinueScheduled = false;
+let anime1FollowedOnly = false;
+let anime1ListIndexPromise = null;
+let anime1FollowedModeRows = null;
+let anime1FollowedModeDeferredRows = null;
 
 function getAnime1PaginationNextButton() {
   return document.querySelector(
@@ -38,6 +42,170 @@ function updateAnime1InfiniteScrollStatus(text, isError = false) {
   status.style.color = isError ? "#dc2626" : "";
 }
 
+function getAnime1FollowedCount() {
+  return Object.values(anime1FollowedCatMap).filter(Boolean).length;
+}
+
+function updateAnime1FollowedFilterButton() {
+  const button = document.getElementById("anime1-followed-filter-btn");
+  if (!button) return;
+
+  const followedCount = getAnime1FollowedCount();
+  button.textContent = anime1FollowedOnly
+    ? `顯示全部（追蹤 ${followedCount}）`
+    : `只看追蹤（${followedCount}）`;
+  button.style.background = anime1FollowedOnly ? "#16a34a" : "#111827";
+  button.style.borderColor = anime1FollowedOnly ? "#22c55e" : "#64748b";
+  button.style.color = "#ffffff";
+  button.setAttribute("aria-pressed", String(anime1FollowedOnly));
+}
+
+function getAnime1ListIndex() {
+  if (!anime1ListIndexPromise) {
+    anime1ListIndexPromise = fetch("https://anime1.me/animelist.json")
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`animelist_request_failed:${response.status}`);
+        }
+        return response.json();
+      })
+      .then((items) => {
+        const index = new Map();
+        items.forEach((item) => {
+          const cat = item?.[0];
+          if (cat !== null && cat !== undefined && cat !== "") {
+            index.set(String(cat), item);
+          }
+        });
+        return { index, items };
+      })
+      .catch((error) => {
+        anime1ListIndexPromise = null;
+        throw error;
+      });
+  }
+
+  return anime1ListIndexPromise;
+}
+
+function createAnime1RowFromListItem(item, rowIndex = 0) {
+  const [cat, title, episode, year, season, subtitleGroup] = item;
+  const row = document.createElement("tr");
+  row.className = rowIndex % 2 === 0 ? "even" : "odd";
+  [title, episode, year, season, subtitleGroup].forEach((value, index) => {
+    const cell = document.createElement("td");
+    if (index === 0) {
+      const link = document.createElement("a");
+      link.href = `https://anime1.me/?cat=${encodeURIComponent(cat)}`;
+      link.textContent = value || "";
+      cell.appendChild(link);
+    } else {
+      cell.textContent = value || "";
+    }
+    row.appendChild(cell);
+  });
+  return row;
+}
+
+async function showAnime1FollowedRows() {
+  const tbody = document.querySelector("#table-list tbody");
+  if (!tbody) return;
+
+  updateAnime1InfiniteScrollStatus("正在建立追蹤動畫索引...");
+
+  try {
+    const { index } = await getAnime1ListIndex();
+    if (!anime1FollowedOnly) return;
+
+    const followedItems = Object.entries(anime1FollowedCatMap)
+      .filter(([, followed]) => followed)
+      .map(([cat]) => index.get(cat))
+      .filter(Boolean);
+
+    const fragment = document.createDocumentFragment();
+    const rows = followedItems.map((item, rowIndex) => {
+      const row = createAnime1RowFromListItem(item, rowIndex);
+      fragment.appendChild(row);
+      return row;
+    });
+
+    anime1ReorderingRows = true;
+    tbody.replaceChildren(fragment);
+    applyAnime1Counts(rows);
+    requestAnimationFrame(() => {
+      anime1ReorderingRows = false;
+    });
+
+    updateAnime1InfiniteScrollStatus(
+      `顯示 ${followedItems.length} 部追蹤動畫`
+    );
+  } catch (error) {
+    console.warn("anime1:followedIndex failed", error);
+    updateAnime1InfiniteScrollStatus("追蹤動畫載入失敗，請再試一次", true);
+  }
+}
+
+function restoreAnime1RowsAfterFollowedMode() {
+  const tbody = document.querySelector("#table-list tbody");
+  if (!tbody || !anime1FollowedModeRows) return;
+
+  const fragment = document.createDocumentFragment();
+  anime1FollowedModeRows.forEach((row) => fragment.appendChild(row));
+  anime1ReorderingRows = true;
+  tbody.replaceChildren(fragment);
+  anime1DeferredHiddenRows = anime1FollowedModeDeferredRows || [];
+  anime1FollowedModeRows = null;
+  anime1FollowedModeDeferredRows = null;
+  applyAnime1Counts();
+  requestAnimationFrame(() => {
+    anime1ReorderingRows = false;
+  });
+}
+
+function initAnime1FollowedFilterButton(tableWrapper) {
+  if (document.getElementById("anime1-followed-filter-btn")) return;
+
+  const toolbar = document.createElement("div");
+  toolbar.id = "anime1-extension-toolbar";
+  toolbar.style.display = "flex";
+  toolbar.style.justifyContent = "flex-end";
+  toolbar.style.margin = "0 0 12px";
+
+  const button = document.createElement("button");
+  button.id = "anime1-followed-filter-btn";
+  button.type = "button";
+  button.style.padding = "7px 12px";
+  button.style.border = "1px solid #64748b";
+  button.style.borderRadius = "6px";
+  button.style.cursor = "pointer";
+  button.style.fontSize = "14px";
+  button.style.fontWeight = "600";
+
+  button.addEventListener("click", () => {
+    const tbody = document.querySelector("#table-list tbody");
+    anime1FollowedOnly = !anime1FollowedOnly;
+    updateAnime1FollowedFilterButton();
+
+    if (anime1FollowedOnly) {
+      anime1FollowedModeRows = tbody ? Array.from(tbody.children) : [];
+      anime1FollowedModeDeferredRows = [...anime1DeferredHiddenRows];
+      anime1DeferredHiddenRows = [];
+      showAnime1FollowedRows();
+    } else {
+      restoreAnime1RowsAfterFollowedMode();
+      updateAnime1InfiniteScrollStatus(
+        isAnime1PaginationEnd(getAnime1PaginationNextButton())
+          ? "已載入全部資料"
+          : "繼續向下滾動以載入更多"
+      );
+    }
+  });
+
+  toolbar.appendChild(button);
+  tableWrapper.insertAdjacentElement("beforebegin", toolbar);
+  updateAnime1FollowedFilterButton();
+}
+
 function continueAnime1InfiniteScrollIfNeeded() {
   if (anime1InfiniteScrollContinueScheduled) return;
   anime1InfiniteScrollContinueScheduled = true;
@@ -50,6 +218,7 @@ function continueAnime1InfiniteScrollIfNeeded() {
     anime1InfiniteScrollContinueScheduled = false;
     if (
       anime1InfiniteScrollIntersecting &&
+      !anime1FollowedOnly &&
       !anime1InfiniteScrollLoading &&
       !isAnime1PaginationEnd(getAnime1PaginationNextButton())
     ) {
@@ -198,6 +367,7 @@ function initAnime1InfiniteScroll() {
   if (!table || !tableWrapper || !nextButton || !tbody?.children.length) return;
 
   anime1InfiniteScrollReady = true;
+  initAnime1FollowedFilterButton(tableWrapper);
 
   const pagination = tableWrapper.querySelector(".dataTables_paginate");
   if (pagination) {
@@ -711,6 +881,11 @@ function moveHiddenAnime1RowsToBottom() {
     const hidden = rowInfo.cat
       ? !!anime1HiddenCatMap[rowInfo.cat]
       : !!anime1HiddenTitleMap[rowInfo.key];
+    row.style.display =
+      anime1FollowedOnly &&
+      (!rowInfo.cat || !anime1FollowedCatMap[rowInfo.cat])
+        ? "none"
+        : "";
     (hidden ? hiddenRows : visibleRows).push(row);
   });
 
@@ -751,6 +926,8 @@ function applyAnime1Counts(
 
     const hidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
     applyAnime1TitleHidden(row, titleCell, hidden);
+    row.style.display =
+      anime1FollowedOnly && (!cat || !anime1FollowedCatMap[cat]) ? "none" : "";
 
     const hideButton = wrap.querySelector(".anime1-hide-title-btn");
     if (hideButton) {
@@ -763,6 +940,7 @@ function applyAnime1Counts(
   });
 
   moveHiddenAnime1RowsToBottom();
+  updateAnime1FollowedFilterButton();
 }
 
 function initAnime1PageScript() {
@@ -831,7 +1009,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.anime1FollowedCatByCat) {
     anime1FollowedCatMap = changes.anime1FollowedCatByCat.newValue || {};
-    scheduleApplyAnime1Counts();
+    if (anime1FollowedOnly) {
+      showAnime1FollowedRows();
+    } else {
+      scheduleApplyAnime1Counts();
+    }
   }
   if (changes.supabaseSession) {
     requestAnime1VisibilityPull();
