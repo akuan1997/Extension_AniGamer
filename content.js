@@ -7,6 +7,241 @@ let anime1Ready = false;
 let anime1ApplyScheduled = false;
 let anime1ListObserver = null;
 let anime1RemoteSyncAt = 0;
+let anime1InfiniteScrollObserver = null;
+let anime1InfiniteScrollLoading = false;
+let anime1InfiniteScrollReady = false;
+let anime1InfiniteScrollPages = 1;
+let anime1InfiniteScrollResetScheduled = false;
+let anime1ReorderingRows = false;
+let anime1DeferredHiddenRows = [];
+let anime1InfiniteScrollIntersecting = false;
+let anime1InfiniteScrollContinueScheduled = false;
+
+function getAnime1PaginationNextButton() {
+  return document.querySelector(
+    "#table-list_next, #table-list_wrapper .dataTables_paginate .next"
+  );
+}
+
+function isAnime1PaginationEnd(nextButton) {
+  return (
+    !nextButton ||
+    nextButton.classList.contains("disabled") ||
+    nextButton.getAttribute("aria-disabled") === "true"
+  );
+}
+
+function updateAnime1InfiniteScrollStatus(text, isError = false) {
+  const status = document.getElementById("anime1-infinite-scroll-status");
+  if (!status) return;
+  status.textContent = text;
+  status.style.color = isError ? "#dc2626" : "";
+}
+
+function continueAnime1InfiniteScrollIfNeeded() {
+  if (anime1InfiniteScrollContinueScheduled) return;
+  anime1InfiniteScrollContinueScheduled = true;
+
+  const schedule =
+    window.requestIdleCallback?.bind(window) ||
+    ((callback) => setTimeout(() => callback({ didTimeout: false }), 50));
+
+  schedule(() => {
+    anime1InfiniteScrollContinueScheduled = false;
+    if (
+      anime1InfiniteScrollIntersecting &&
+      !anime1InfiniteScrollLoading &&
+      !isAnime1PaginationEnd(getAnime1PaginationNextButton())
+    ) {
+      loadNextAnime1Page();
+    }
+  }, { timeout: 250 });
+}
+
+function stabilizeAnime1TableDuringLoad() {
+  const tableWrapper = document.getElementById("table-list_wrapper");
+  if (!tableWrapper) return () => {};
+
+  tableWrapper.style.minHeight = `${tableWrapper.getBoundingClientRect().height}px`;
+  return () => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        tableWrapper.style.minHeight = "";
+      });
+    });
+  };
+}
+
+function scheduleAnime1InfiniteScrollReset() {
+  if (
+    !anime1InfiniteScrollReady ||
+    anime1InfiniteScrollLoading ||
+    anime1InfiniteScrollResetScheduled
+  ) {
+    return;
+  }
+
+  anime1InfiniteScrollResetScheduled = true;
+  requestAnimationFrame(() => {
+    anime1InfiniteScrollResetScheduled = false;
+    if (anime1InfiniteScrollLoading) return;
+
+    anime1InfiniteScrollPages = 1;
+    const nextButton = getAnime1PaginationNextButton();
+    const sentinel = document.getElementById("anime1-infinite-scroll-sentinel");
+
+    if (isAnime1PaginationEnd(nextButton)) {
+      updateAnime1InfiniteScrollStatus("已載入全部資料");
+      anime1InfiniteScrollObserver?.disconnect();
+      return;
+    }
+
+    updateAnime1InfiniteScrollStatus("繼續向下滾動以載入更多");
+    if (sentinel) {
+      anime1InfiniteScrollObserver?.observe(sentinel);
+    }
+  });
+}
+
+function waitForAnime1NextPage(previousFirstRow, previousNextButtonClass) {
+  return new Promise((resolve) => {
+    let attempts = 0;
+
+    function checkPageChanged() {
+      const tbody = document.querySelector("#table-list tbody");
+      const nextButton = getAnime1PaginationNextButton();
+      const firstRowChanged = tbody?.firstElementChild !== previousFirstRow;
+      const nextButtonChanged = nextButton?.className !== previousNextButtonClass;
+
+      if (firstRowChanged || nextButtonChanged || attempts >= 30) {
+        resolve(firstRowChanged);
+        return;
+      }
+
+      attempts += 1;
+      requestAnimationFrame(checkPageChanged);
+    }
+
+    requestAnimationFrame(checkPageChanged);
+  });
+}
+
+async function loadNextAnime1Page() {
+  if (anime1InfiniteScrollLoading) return;
+
+  const tbody = document.querySelector("#table-list tbody");
+  const nextButton = getAnime1PaginationNextButton();
+  if (!tbody || isAnime1PaginationEnd(nextButton)) {
+    updateAnime1InfiniteScrollStatus("已載入全部資料");
+    anime1InfiniteScrollObserver?.disconnect();
+    return;
+  }
+
+  anime1InfiniteScrollLoading = true;
+  updateAnime1InfiniteScrollStatus("載入下一頁中...");
+
+  const existingRows = Array.from(tbody.children);
+  const previousFirstRow = tbody.firstElementChild;
+  const previousNextButtonClass = nextButton.className;
+  const releaseStableTableHeight = stabilizeAnime1TableDuringLoad();
+
+  nextButton.click();
+  const pageChanged = await waitForAnime1NextPage(
+    previousFirstRow,
+    previousNextButtonClass
+  );
+
+  if (!pageChanged) {
+    releaseStableTableHeight();
+    anime1InfiniteScrollLoading = false;
+    updateAnime1InfiniteScrollStatus("下一頁載入失敗，請再試一次", true);
+    return;
+  }
+
+  const nextPageRows = Array.from(tbody.children);
+  const loadedRows = new Set(tbody.children);
+  const previousRows = document.createDocumentFragment();
+  existingRows.forEach((row) => {
+    if (!loadedRows.has(row)) {
+      previousRows.appendChild(row);
+    }
+  });
+  tbody.insertBefore(previousRows, tbody.firstChild);
+
+  anime1InfiniteScrollPages += 1;
+
+  const currentNextButton = getAnime1PaginationNextButton();
+  if (isAnime1PaginationEnd(currentNextButton)) {
+    updateAnime1InfiniteScrollStatus("已載入全部資料");
+    anime1InfiniteScrollObserver?.disconnect();
+  } else {
+    updateAnime1InfiniteScrollStatus(
+      `已載入 ${anime1InfiniteScrollPages} 頁，繼續向下滾動以載入更多`
+    );
+  }
+
+  requestAnimationFrame(() => {
+    applyAnime1Counts(nextPageRows);
+    releaseStableTableHeight();
+    anime1InfiniteScrollLoading = false;
+    continueAnime1InfiniteScrollIfNeeded();
+  });
+}
+
+function initAnime1InfiniteScroll() {
+  if (anime1InfiniteScrollReady) return;
+
+  const table = document.getElementById("table-list");
+  const tableWrapper = document.getElementById("table-list_wrapper");
+  const nextButton = getAnime1PaginationNextButton();
+  const tbody = table?.querySelector("tbody");
+  if (!table || !tableWrapper || !nextButton || !tbody?.children.length) return;
+
+  anime1InfiniteScrollReady = true;
+
+  const pagination = tableWrapper.querySelector(".dataTables_paginate");
+  if (pagination) {
+    pagination.style.display = "none";
+  }
+  const paginationInfo = tableWrapper.querySelector(".dataTables_info");
+  if (paginationInfo) {
+    paginationInfo.style.display = "none";
+  }
+
+  const sentinel = document.createElement("div");
+  sentinel.id = "anime1-infinite-scroll-sentinel";
+  sentinel.style.minHeight = "1px";
+  sentinel.style.padding = "16px 0";
+  sentinel.style.textAlign = "center";
+
+  const status = document.createElement("span");
+  status.id = "anime1-infinite-scroll-status";
+  status.style.fontSize = "13px";
+  status.style.opacity = "0.75";
+  status.textContent = isAnime1PaginationEnd(nextButton)
+    ? "已載入全部資料"
+    : "繼續向下滾動以載入更多";
+  sentinel.appendChild(status);
+  tableWrapper.insertAdjacentElement("afterend", sentinel);
+
+  if (isAnime1PaginationEnd(nextButton)) return;
+
+  anime1InfiniteScrollObserver = new IntersectionObserver(
+    (entries) => {
+      const sentinelEntry = entries.find(
+        (entry) => entry.target.id === "anime1-infinite-scroll-sentinel"
+      );
+      if (!sentinelEntry) return;
+
+      anime1InfiniteScrollIntersecting = sentinelEntry.isIntersecting;
+      if (anime1InfiniteScrollIntersecting) {
+        continueAnime1InfiniteScrollIfNeeded();
+      }
+    },
+    { rootMargin: "0px 0px 1000px 0px" }
+  );
+  anime1InfiniteScrollObserver.observe(sentinel);
+}
 
 function scheduleApplyAnime1Counts() {
   if (anime1ApplyScheduled) return;
@@ -14,6 +249,7 @@ function scheduleApplyAnime1Counts() {
   requestAnimationFrame(() => {
     anime1ApplyScheduled = false;
     applyAnime1Counts();
+    initAnime1InfiniteScroll();
   });
 }
 
@@ -455,8 +691,53 @@ function ensureAnime1Controls(row, titleCell, key, cat, title) {
   return { wrap, input };
 }
 
-function applyAnime1Counts() {
-  const rows = document.querySelectorAll("#table-list tbody tr");
+function moveHiddenAnime1RowsToBottom() {
+  const tbody = document.querySelector("#table-list tbody");
+  if (!tbody) return;
+
+  const rows = Array.from(
+    new Set([...tbody.children, ...anime1DeferredHiddenRows])
+  );
+  const visibleRows = [];
+  const hiddenRows = [];
+
+  rows.forEach((row) => {
+    const rowInfo = getAnime1RowInfo(row);
+    if (!rowInfo) {
+      visibleRows.push(row);
+      return;
+    }
+
+    const hidden = rowInfo.cat
+      ? !!anime1HiddenCatMap[rowInfo.cat]
+      : !!anime1HiddenTitleMap[rowInfo.key];
+    (hidden ? hiddenRows : visibleRows).push(row);
+  });
+
+  const hasMorePages = !isAnime1PaginationEnd(getAnime1PaginationNextButton());
+  const displayedRows = hasMorePages
+    ? visibleRows
+    : [...visibleRows, ...hiddenRows];
+  anime1DeferredHiddenRows = hasMorePages ? hiddenRows : [];
+
+  const currentRows = Array.from(tbody.children);
+  const orderChanged =
+    displayedRows.length !== currentRows.length ||
+    displayedRows.some((row, index) => row !== currentRows[index]);
+  if (!orderChanged) return;
+
+  const fragment = document.createDocumentFragment();
+  displayedRows.forEach((row) => fragment.appendChild(row));
+  anime1ReorderingRows = true;
+  tbody.replaceChildren(fragment);
+  requestAnimationFrame(() => {
+    anime1ReorderingRows = false;
+  });
+}
+
+function applyAnime1Counts(
+  rows = document.querySelectorAll("#table-list tbody tr")
+) {
   rows.forEach((row) => {
     const rowInfo = getAnime1RowInfo(row);
     if (!rowInfo) return;
@@ -480,6 +761,8 @@ function applyAnime1Counts() {
       updateFollowButtonStyle(followButton, cat ? !!anime1FollowedCatMap[cat] : false);
     }
   });
+
+  moveHiddenAnime1RowsToBottom();
 }
 
 function initAnime1PageScript() {
@@ -493,9 +776,32 @@ function initAnime1PageScript() {
   }
 
   anime1ListObserver = new MutationObserver((mutations) => {
-    const hasAddedNode = mutations.some((mutation) => mutation.addedNodes.length > 0);
-    if (hasAddedNode) {
+    const hasRelevantAddedNode = mutations.some((mutation) =>
+      Array.from(mutation.addedNodes).some(
+        (node) =>
+          node instanceof Element &&
+          (node.matches("#table-list, #table-list_wrapper, #table-list tbody tr") ||
+            node.querySelector?.("#table-list, #table-list_wrapper"))
+      )
+    );
+    const tableWasRedrawn = mutations.some(
+      (mutation) =>
+        mutation.target instanceof HTMLTableSectionElement &&
+        mutation.target.matches("#table-list tbody") &&
+        (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)
+    );
+
+    if (
+      tableWasRedrawn &&
+      !anime1ReorderingRows &&
+      !anime1InfiniteScrollLoading
+    ) {
+      anime1DeferredHiddenRows = [];
+      scheduleAnime1InfiniteScrollReset();
+    }
+    if (hasRelevantAddedNode && !anime1InfiniteScrollLoading) {
       scheduleApplyAnime1Counts();
+      initAnime1InfiniteScroll();
     }
   });
 
