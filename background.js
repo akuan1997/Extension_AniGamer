@@ -6,6 +6,7 @@ const STORAGE_ANIME1_HIDDEN_CAT_KEY = "anime1HiddenCatByCat";
 const STORAGE_ANIME1_FOLLOWED_CAT_KEY = "anime1FollowedCatByCat";
 const STORAGE_ANIME1_COUNT_CAT_KEY = "anime1CountByCat";
 const STORAGE_ANIME1_UPDATED_AT_CAT_KEY = "anime1UpdatedAtByCat";
+const STORAGE_ANIME1_FINISHED_CAT_KEY = "anime1FinishedByCat";
 const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
 const OAUTH_REDIRECT_PATH = "supabase-auth";
 
@@ -127,6 +128,20 @@ async function getAnime1UpdatedAtCatMap() {
   return new Promise((resolve) => {
     chrome.storage.local.get({ [STORAGE_ANIME1_UPDATED_AT_CAT_KEY]: {} }, (result) => {
       resolve(result[STORAGE_ANIME1_UPDATED_AT_CAT_KEY] || {});
+    });
+  });
+}
+
+async function saveAnime1FinishedCatMap(map) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_ANIME1_FINISHED_CAT_KEY]: map }, resolve);
+  });
+}
+
+async function getAnime1FinishedCatMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_ANIME1_FINISHED_CAT_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_ANIME1_FINISHED_CAT_KEY] || {});
     });
   });
 }
@@ -314,7 +329,7 @@ async function pullAnime1Visibility() {
   if (!session || !userId) return { ok: false, error: "not_signed_in" };
 
   const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show,count,updated_at&user_id=eq.${encodeURIComponent(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show,count,finished,updated_at&user_id=eq.${encodeURIComponent(
       userId
     )}`,
     {
@@ -335,6 +350,7 @@ async function pullAnime1Visibility() {
   const hiddenMap = {};
   const followedMap = {};
   const countMap = {};
+  const finishedMap = {};
   const updatedAtMap = {};
   data.forEach((row) => {
     if (row?.cat === undefined || row?.cat === null) return;
@@ -344,6 +360,9 @@ async function pullAnime1Visibility() {
     if (row.count !== undefined && row.count !== null) {
       const count = Number.parseInt(String(row.count), 10);
       countMap[cat] = Number.isNaN(count) || count < 0 ? 0 : count;
+    }
+    if (row.finished !== undefined && row.finished !== null) {
+      finishedMap[cat] = row.finished === true;
     }
     if (row.updated_at) {
       const updatedAt = Date.parse(row.updated_at);
@@ -357,11 +376,13 @@ async function pullAnime1Visibility() {
     currentHiddenMap,
     currentFollowedMap,
     currentCountMap,
+    currentFinishedMap,
     currentUpdatedAtMap,
   ] = await Promise.all([
     getAnime1HiddenCatMap(),
     getAnime1FollowedCatMap(),
     getAnime1CountCatMap(),
+    getAnime1FinishedCatMap(),
     getAnime1UpdatedAtCatMap(),
   ]);
 
@@ -374,6 +395,7 @@ async function pullAnime1Visibility() {
   await saveAnime1HiddenCatMap({ ...currentHiddenMap, ...hiddenMap });
   await saveAnime1FollowedCatMap({ ...currentFollowedMap, ...followedMap });
   await saveAnime1CountCatMap({ ...currentCountMap, ...countMap });
+  await saveAnime1FinishedCatMap({ ...currentFinishedMap, ...finishedMap });
   await saveAnime1UpdatedAtCatMap(mergedUpdatedAtMap);
   return { ok: true, count: data.length };
 }
@@ -458,6 +480,43 @@ async function upsertAnime1Count(cat, count) {
   return { ok: true };
 }
 
+async function upsertAnime1Finished(cat, finished) {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const catNumber = Number.parseInt(String(cat), 10);
+  if (!Number.isInteger(catNumber) || catNumber < 0) {
+    return { ok: false, error: "invalid_cat" };
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?on_conflict=user_id,cat`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        cat: catNumber,
+        finished: finished === true,
+        updated_at: new Date().toISOString(),
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return { ok: false, error: data?.message || "Upsert anime1 finished failed" };
+  }
+
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -499,6 +558,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "anime1:countUpsert": {
           const result = await upsertAnime1Count(message.cat, message.count);
+          sendResponse(result);
+          return;
+        }
+        case "anime1:finishedUpsert": {
+          const result = await upsertAnime1Finished(message.cat, message.finished);
           sendResponse(result);
           return;
         }

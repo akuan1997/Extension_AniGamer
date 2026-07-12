@@ -1,6 +1,8 @@
 let anime1CountMap = {};
 let anime1CountByCatMap = {};
 let anime1FinishedByKeyMap = {};
+let anime1FinishedByCatMap = {};
+let anime1FinishedMigrationRan = false;
 let anime1HiddenTitleMap = {};
 let anime1HiddenCatMap = {};
 let anime1FollowedCatMap = {};
@@ -341,9 +343,16 @@ function getAnime1ListItemKey(item) {
   return title ? `anime1:title:${title}` : null;
 }
 
+function isAnime1FinishedByCatKey(cat, key) {
+  if (cat && anime1FinishedByCatMap[cat] !== undefined) {
+    return !!anime1FinishedByCatMap[cat];
+  }
+  return key ? !!anime1FinishedByKeyMap[key] : false;
+}
+
 function isAnime1FinishedItem(item) {
   const key = getAnime1ListItemKey(item);
-  return key ? !!anime1FinishedByKeyMap[key] : false;
+  return isAnime1FinishedByCatKey(item?.cat, key);
 }
 
 function refreshAnime1BacklogRowsAfterProgressChange() {
@@ -429,7 +438,11 @@ async function showAnime1FollowedRows() {
         };
         const leftSeasonPriority = seasonPriority[left?.season] || 0;
         const rightSeasonPriority = seasonPriority[right?.season] || 0;
-        return rightSeasonPriority - leftSeasonPriority;
+        if (leftSeasonPriority !== rightSeasonPriority) {
+          return rightSeasonPriority - leftSeasonPriority;
+        }
+
+        return compareAnime1ListUpdateOrder(left, right);
       });
 
     const fragment = document.createDocumentFragment();
@@ -848,13 +861,63 @@ function saveAnime1CatCount(cat, value) {
   saveAnime1UpdatedAt(cat);
 }
 
-function saveAnime1Finished(key, finished) {
+function saveAnime1Finished(key, cat, finished) {
   anime1FinishedByKeyMap = {
     ...anime1FinishedByKeyMap,
     [key]: finished,
   };
-  chrome.storage.local.set({
-    anime1FinishedByKey: anime1FinishedByKeyMap,
+  const update = { anime1FinishedByKey: anime1FinishedByKeyMap };
+  if (cat) {
+    anime1FinishedByCatMap = {
+      ...anime1FinishedByCatMap,
+      [cat]: finished,
+    };
+    update.anime1FinishedByCat = anime1FinishedByCatMap;
+  }
+  chrome.storage.local.set(update);
+  if (cat) {
+    saveAnime1UpdatedAt(cat);
+  }
+}
+
+function migrateLegacyAnime1Finished() {
+  if (anime1FinishedMigrationRan) return;
+  anime1FinishedMigrationRan = true;
+
+  const urlKeyPrefix = "anime1:url:";
+  const derivedByCat = {};
+  Object.entries(anime1FinishedByKeyMap).forEach(([key, finished]) => {
+    if (!key.startsWith(urlKeyPrefix)) return;
+    const cat = getAnime1CatFromHref(key.slice(urlKeyPrefix.length));
+    if (cat && anime1FinishedByCatMap[cat] === undefined) {
+      derivedByCat[cat] = !!finished;
+    }
+  });
+
+  if (!Object.keys(derivedByCat).length) return;
+
+  anime1FinishedByCatMap = { ...anime1FinishedByCatMap, ...derivedByCat };
+  chrome.storage.local.set({ anime1FinishedByCat: anime1FinishedByCatMap });
+
+  chrome.storage.local.get({ anime1FinishedMigratedV1: false }, (result) => {
+    if (result.anime1FinishedMigratedV1) return;
+
+    const finishedCats = Object.entries(derivedByCat)
+      .filter(([, finished]) => finished)
+      .map(([cat]) => cat);
+    if (!finishedCats.length) {
+      chrome.storage.local.set({ anime1FinishedMigratedV1: true });
+      return;
+    }
+
+    Promise.all(finishedCats.map((cat) => syncAnime1Finished(cat, true))).then(
+      (results) => {
+        const allSynced = results.every((r) => r?.ok);
+        if (allSynced) {
+          chrome.storage.local.set({ anime1FinishedMigratedV1: true });
+        }
+      }
+    );
   });
 }
 
@@ -900,6 +963,7 @@ function loadAnime1StateAndApply() {
       anime1TitleCountByKey: {},
       anime1CountByCat: {},
       anime1FinishedByKey: {},
+      anime1FinishedByCat: {},
       anime1HiddenTitleByKey: {},
       anime1HiddenCatByCat: {},
       anime1FollowedCatByCat: {},
@@ -910,11 +974,13 @@ function loadAnime1StateAndApply() {
       anime1CountMap = result.anime1TitleCountByKey || {};
       anime1CountByCatMap = result.anime1CountByCat || {};
       anime1FinishedByKeyMap = result.anime1FinishedByKey || {};
+      anime1FinishedByCatMap = result.anime1FinishedByCat || {};
       anime1HiddenTitleMap = result.anime1HiddenTitleByKey || {};
       anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
       anime1FollowedCatMap = result.anime1FollowedCatByCat || {};
       anime1FollowedItemByCatMap = result.anime1FollowedItemByCat || {};
       anime1UpdatedAtByCatMap = result.anime1UpdatedAtByCat || {};
+      migrateLegacyAnime1Finished();
       scheduleApplyAnime1Counts();
     }
   );
@@ -1018,6 +1084,25 @@ async function syncAnime1Count(cat, count) {
 
   if (!result?.ok && result?.error !== "not_signed_in") {
     console.warn("anime1:countUpsert failed", result?.error || result);
+  }
+  return result;
+}
+
+async function syncAnime1Finished(cat, finished) {
+  if (!cat) return { ok: true, localOnly: true };
+  const result = await chrome.runtime
+    .sendMessage({
+      type: "anime1:finishedUpsert",
+      cat,
+      finished,
+    })
+    .catch((error) => ({
+      ok: false,
+      error: error?.message || "sendMessage_failed",
+    }));
+
+  if (!result?.ok && result?.error !== "not_signed_in") {
+    console.warn("anime1:finishedUpsert failed", result?.error || result);
   }
   return result;
 }
@@ -1140,7 +1225,7 @@ function updateFinishedButtonStyle(
   saveButton.disabled = finished;
 }
 
-function createFinishedButton(input, saveButton, key) {
+function createFinishedButton(input, saveButton, key, cat) {
   const finishedButton = document.createElement("button");
   finishedButton.type = "button";
   finishedButton.className = "anime1-finished-btn";
@@ -1157,25 +1242,37 @@ function createFinishedButton(input, saveButton, key) {
 
   bindInteractiveControlEvents(finishedButton, true);
 
-  finishedButton.addEventListener("click", () => {
-    const nextFinished = !anime1FinishedByKeyMap[key];
-    saveAnime1Finished(key, nextFinished);
+  finishedButton.addEventListener("click", async () => {
+    const previousFinished = isAnime1FinishedByCatKey(cat, key);
+    const nextFinished = !previousFinished;
+    finishedButton.disabled = true;
+    saveAnime1Finished(key, cat, nextFinished);
     updateFinishedButtonStyle(
       finishedButton,
       input,
       saveButton,
       nextFinished
     );
-    if (nextFinished && anime1CurrentOnly) {
-      showAnime1FollowedRows();
+
+    const result = await syncAnime1Finished(cat, nextFinished);
+    if (!result?.ok && result?.error !== "not_signed_in") {
+      saveAnime1Finished(key, cat, previousFinished);
+      updateFinishedButtonStyle(
+        finishedButton,
+        input,
+        saveButton,
+        previousFinished
+      );
     }
+
+    finishedButton.disabled = false;
   });
 
   updateFinishedButtonStyle(
     finishedButton,
     input,
     saveButton,
-    !!anime1FinishedByKeyMap[key]
+    isAnime1FinishedByCatKey(cat, key)
   );
   return finishedButton;
 }
@@ -1436,7 +1533,7 @@ function ensureAnime1Controls(row, titleCell, key, cat, title) {
 
     input = createCountInput(key, cat);
     saveButton = createCountSaveButton(input, key, cat);
-    finishedButton = createFinishedButton(input, saveButton, key);
+    finishedButton = createFinishedButton(input, saveButton, key, cat);
 
     progressWrap.appendChild(label);
     progressWrap.appendChild(input);
@@ -1585,7 +1682,7 @@ function applyAnime1Counts(
       finishedButton,
       input,
       saveButton,
-      !!anime1FinishedByKeyMap[key]
+      isAnime1FinishedByCatKey(cat, key)
     );
 
     const hidden = cat ? !!anime1HiddenCatMap[cat] : !!anime1HiddenTitleMap[key];
@@ -1680,6 +1777,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.anime1FinishedByKey) {
     anime1FinishedByKeyMap = changes.anime1FinishedByKey.newValue || {};
+    if (isAnime1FilteredMode()) {
+      showAnime1FollowedRows();
+    } else {
+      scheduleApplyAnime1Counts();
+    }
+  }
+  if (changes.anime1FinishedByCat) {
+    anime1FinishedByCatMap = changes.anime1FinishedByCat.newValue || {};
     if (isAnime1FilteredMode()) {
       showAnime1FollowedRows();
     } else {
