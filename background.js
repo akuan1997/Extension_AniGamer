@@ -5,6 +5,7 @@ const STORAGE_SESSION_KEY = "supabaseSession";
 const STORAGE_ANIME1_HIDDEN_CAT_KEY = "anime1HiddenCatByCat";
 const STORAGE_ANIME1_FOLLOWED_CAT_KEY = "anime1FollowedCatByCat";
 const STORAGE_ANIME1_COUNT_CAT_KEY = "anime1CountByCat";
+const STORAGE_ANIME1_UPDATED_AT_CAT_KEY = "anime1UpdatedAtByCat";
 const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
 const OAUTH_REDIRECT_PATH = "supabase-auth";
 
@@ -112,6 +113,20 @@ async function getAnime1CountCatMap() {
   return new Promise((resolve) => {
     chrome.storage.local.get({ [STORAGE_ANIME1_COUNT_CAT_KEY]: {} }, (result) => {
       resolve(result[STORAGE_ANIME1_COUNT_CAT_KEY] || {});
+    });
+  });
+}
+
+async function saveAnime1UpdatedAtCatMap(map) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_ANIME1_UPDATED_AT_CAT_KEY]: map }, resolve);
+  });
+}
+
+async function getAnime1UpdatedAtCatMap() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({ [STORAGE_ANIME1_UPDATED_AT_CAT_KEY]: {} }, (result) => {
+      resolve(result[STORAGE_ANIME1_UPDATED_AT_CAT_KEY] || {});
     });
   });
 }
@@ -299,7 +314,7 @@ async function pullAnime1Visibility() {
   if (!session || !userId) return { ok: false, error: "not_signed_in" };
 
   const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show,count&user_id=eq.${encodeURIComponent(
+    `${SUPABASE_URL}/rest/v1/${ANIME1_VISIBILITY_TABLE}?select=cat,show,count,updated_at&user_id=eq.${encodeURIComponent(
       userId
     )}`,
     {
@@ -320,6 +335,7 @@ async function pullAnime1Visibility() {
   const hiddenMap = {};
   const followedMap = {};
   const countMap = {};
+  const updatedAtMap = {};
   data.forEach((row) => {
     if (row?.cat === undefined || row?.cat === null) return;
     const cat = String(row.cat);
@@ -329,17 +345,36 @@ async function pullAnime1Visibility() {
       const count = Number.parseInt(String(row.count), 10);
       countMap[cat] = Number.isNaN(count) || count < 0 ? 0 : count;
     }
+    if (row.updated_at) {
+      const updatedAt = Date.parse(row.updated_at);
+      if (!Number.isNaN(updatedAt)) {
+        updatedAtMap[cat] = updatedAt;
+      }
+    }
   });
 
-  const [currentHiddenMap, currentFollowedMap, currentCountMap] = await Promise.all([
+  const [
+    currentHiddenMap,
+    currentFollowedMap,
+    currentCountMap,
+    currentUpdatedAtMap,
+  ] = await Promise.all([
     getAnime1HiddenCatMap(),
     getAnime1FollowedCatMap(),
     getAnime1CountCatMap(),
+    getAnime1UpdatedAtCatMap(),
   ]);
+
+  const mergedUpdatedAtMap = { ...currentUpdatedAtMap };
+  Object.entries(updatedAtMap).forEach(([cat, updatedAt]) => {
+    const localValue = Number(mergedUpdatedAtMap[cat]) || 0;
+    mergedUpdatedAtMap[cat] = Math.max(localValue, updatedAt);
+  });
 
   await saveAnime1HiddenCatMap({ ...currentHiddenMap, ...hiddenMap });
   await saveAnime1FollowedCatMap({ ...currentFollowedMap, ...followedMap });
   await saveAnime1CountCatMap({ ...currentCountMap, ...countMap });
+  await saveAnime1UpdatedAtCatMap(mergedUpdatedAtMap);
   return { ok: true, count: data.length };
 }
 

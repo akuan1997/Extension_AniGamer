@@ -5,6 +5,7 @@ let anime1HiddenTitleMap = {};
 let anime1HiddenCatMap = {};
 let anime1FollowedCatMap = {};
 let anime1FollowedItemByCatMap = {};
+let anime1UpdatedAtByCatMap = {};
 let anime1Ready = false;
 let anime1ApplyScheduled = false;
 let anime1ListObserver = null;
@@ -21,7 +22,10 @@ let anime1InfiniteScrollContinueScheduled = false;
 let anime1InfiniteScrollPositionCheckScheduled = false;
 let anime1InfiniteScrollResizeObserver = null;
 let anime1FollowedOnly = false;
+let anime1BacklogOnly = false;
+let anime1CurrentOnly = false;
 let anime1ListIndexPromise = null;
+let anime1ListTotalCount = null;
 let anime1FollowedModeRows = null;
 let anime1FollowedModeDeferredRows = null;
 
@@ -155,18 +159,92 @@ function getAnime1FollowedCount() {
   return Object.values(anime1FollowedCatMap).filter(Boolean).length;
 }
 
-function updateAnime1FollowedFilterButton() {
-  const button = document.getElementById("anime1-followed-filter-btn");
-  if (!button) return;
+function isAnime1FilteredMode() {
+  return anime1FollowedOnly || anime1BacklogOnly || anime1CurrentOnly;
+}
 
-  const followedCount = getAnime1FollowedCount();
-  button.textContent = anime1FollowedOnly
-    ? `顯示全部（追蹤 ${followedCount}）`
-    : `只看追蹤（${followedCount}）`;
-  button.style.background = anime1FollowedOnly ? "#16a34a" : "#111827";
-  button.style.borderColor = anime1FollowedOnly ? "#22c55e" : "#64748b";
-  button.style.color = "#ffffff";
-  button.setAttribute("aria-pressed", String(anime1FollowedOnly));
+function isAnime1CurrentItem(item) {
+  return String(item?.episode || "").includes("連載中");
+}
+
+function getAnime1StatusCounts() {
+  const followedCats = new Set(
+    Object.entries(anime1FollowedCatMap)
+      .filter(([, followed]) => followed)
+      .map(([cat]) => cat)
+  );
+  const hiddenCats = new Set(
+    Object.entries(anime1HiddenCatMap)
+      .filter(([, hidden]) => hidden)
+      .map(([cat]) => cat)
+  );
+  const statusCats = new Set([...followedCats, ...hiddenCats]);
+
+  return {
+    followed: followedCats.size,
+    hidden: hiddenCats.size,
+    none:
+      typeof anime1ListTotalCount === "number"
+        ? Math.max(0, anime1ListTotalCount - statusCats.size)
+        : null,
+  };
+}
+
+function updateAnime1StatusSummary() {
+  const summary = document.getElementById("anime1-status-summary");
+  if (!summary) return;
+
+  const counts = getAnime1StatusCounts();
+  summary.textContent =
+    counts.none === null
+      ? `無狀態 … / 已追蹤 ${counts.followed} / 已忽略 ${counts.hidden}`
+      : `無狀態 ${counts.none} / 已追蹤 ${counts.followed} / 已忽略 ${counts.hidden}`;
+}
+
+function updateAnime1FilterButtons() {
+  const followedButton = document.getElementById(
+    "anime1-followed-filter-btn"
+  );
+  const backlogButton = document.getElementById("anime1-backlog-filter-btn");
+  const currentButton = document.getElementById("anime1-current-filter-btn");
+
+  if (followedButton) {
+    followedButton.textContent = "追蹤";
+    followedButton.style.background = anime1FollowedOnly
+      ? "#16a34a"
+      : "#111827";
+    followedButton.style.borderColor = anime1FollowedOnly
+      ? "#22c55e"
+      : "#64748b";
+    followedButton.style.color = "#ffffff";
+    followedButton.setAttribute("aria-pressed", String(anime1FollowedOnly));
+  }
+
+  if (backlogButton) {
+    backlogButton.textContent = "補番";
+    backlogButton.style.background = anime1BacklogOnly
+      ? "#d97706"
+      : "#111827";
+    backlogButton.style.borderColor = anime1BacklogOnly
+      ? "#f59e0b"
+      : "#64748b";
+    backlogButton.style.color = "#ffffff";
+    backlogButton.setAttribute("aria-pressed", String(anime1BacklogOnly));
+  }
+
+  if (currentButton) {
+    currentButton.textContent = "新番";
+    currentButton.style.background = anime1CurrentOnly
+      ? "#2563eb"
+      : "#111827";
+    currentButton.style.borderColor = anime1CurrentOnly
+      ? "#3b82f6"
+      : "#64748b";
+    currentButton.style.color = "#ffffff";
+    currentButton.setAttribute("aria-pressed", String(anime1CurrentOnly));
+  }
+
+  updateAnime1StatusSummary();
 }
 
 function getAnime1ListIndex() {
@@ -179,10 +257,11 @@ function getAnime1ListIndex() {
         return response.json();
       })
       .then((items) => {
+        anime1ListTotalCount = items.length;
         const index = new Map();
         const urlIndex = new Map();
-        items.forEach((item) => {
-          const normalizedItem = normalizeAnime1ListItem(item);
+        items.forEach((item, listIndex) => {
+          const normalizedItem = normalizeAnime1ListItem(item, listIndex);
           if (!normalizedItem) return;
 
           if (normalizedItem.cat) {
@@ -192,6 +271,7 @@ function getAnime1ListIndex() {
             urlIndex.set(normalizedItem.href, normalizedItem);
           }
         });
+        updateAnime1StatusSummary();
         return { index, urlIndex };
       })
       .catch((error) => {
@@ -203,7 +283,7 @@ function getAnime1ListIndex() {
   return anime1ListIndexPromise;
 }
 
-function normalizeAnime1ListItem(item) {
+function normalizeAnime1ListItem(item, listIndex = 0) {
   if (!Array.isArray(item)) return null;
 
   const [rawCat, rawTitle, episode, year, season, subtitleGroup] = item;
@@ -228,6 +308,7 @@ function normalizeAnime1ListItem(item) {
     year,
     season,
     subtitleGroup,
+    listIndex,
   };
 }
 
@@ -241,6 +322,8 @@ function createAnime1RowFromListItem(item, rowIndex = 0) {
       const link = document.createElement("a");
       link.href = href || `https://anime1.me/?cat=${encodeURIComponent(cat)}`;
       link.textContent = value || "";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
       cell.appendChild(link);
     } else {
       cell.textContent = value || "";
@@ -248,6 +331,46 @@ function createAnime1RowFromListItem(item, rowIndex = 0) {
     row.appendChild(cell);
   });
   return row;
+}
+
+function getAnime1ListItemKey(item) {
+  const normalizedUrl = normalizeAnime1Url(item?.href);
+  if (normalizedUrl) return `anime1:url:${normalizedUrl}`;
+
+  const title = String(item?.title || "").replace(/\s+/g, " ").trim();
+  return title ? `anime1:title:${title}` : null;
+}
+
+function isAnime1FinishedItem(item) {
+  const key = getAnime1ListItemKey(item);
+  return key ? !!anime1FinishedByKeyMap[key] : false;
+}
+
+function refreshAnime1BacklogRowsAfterProgressChange() {
+  if (anime1BacklogOnly) {
+    showAnime1FollowedRows();
+  }
+}
+
+function compareAnime1ListUpdateOrder(left, right) {
+  return (left?.listIndex ?? Number.MAX_SAFE_INTEGER) -
+    (right?.listIndex ?? Number.MAX_SAFE_INTEGER);
+}
+
+function getAnime1UpdatedAtValue(item) {
+  const cat = item?.cat;
+  if (!cat) return 0;
+  const value = anime1UpdatedAtByCatMap[cat];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function compareAnime1EditedOrder(left, right) {
+  const leftTime = getAnime1UpdatedAtValue(left);
+  const rightTime = getAnime1UpdatedAtValue(right);
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  return compareAnime1ListUpdateOrder(left, right);
 }
 
 async function showAnime1FollowedRows() {
@@ -258,9 +381,9 @@ async function showAnime1FollowedRows() {
 
   try {
     const { index, urlIndex } = await getAnime1ListIndex();
-    if (!anime1FollowedOnly) return;
+    if (!isAnime1FilteredMode()) return;
 
-    const followedItems = Object.entries(anime1FollowedCatMap)
+    const filteredItems = Object.entries(anime1FollowedCatMap)
       .filter(([, followed]) => followed)
       .map(([cat]) => {
         const metadata = anime1FollowedItemByCatMap[cat];
@@ -271,7 +394,28 @@ async function showAnime1FollowedRows() {
         );
       })
       .filter(Boolean)
+      .filter(
+        (item) =>
+          (!anime1CurrentOnly ||
+            (isAnime1CurrentItem(item) && !isAnime1FinishedItem(item))) &&
+          (!anime1BacklogOnly ||
+            (!isAnime1CurrentItem(item) && !isAnime1FinishedItem(item)))
+      )
       .sort((left, right) => {
+        if (anime1CurrentOnly) {
+          return compareAnime1ListUpdateOrder(left, right);
+        }
+
+        if (anime1BacklogOnly) {
+          return compareAnime1EditedOrder(left, right);
+        }
+
+        const leftFinished = isAnime1FinishedItem(left);
+        const rightFinished = isAnime1FinishedItem(right);
+        if (leftFinished !== rightFinished) {
+          return leftFinished ? 1 : -1;
+        }
+
         const leftYear = Number.parseInt(left?.year, 10) || 0;
         const rightYear = Number.parseInt(right?.year, 10) || 0;
         const yearDifference = rightYear - leftYear;
@@ -289,7 +433,7 @@ async function showAnime1FollowedRows() {
       });
 
     const fragment = document.createDocumentFragment();
-    const rows = followedItems.map((item, rowIndex) => {
+    const rows = filteredItems.map((item, rowIndex) => {
       const row = createAnime1RowFromListItem(item, rowIndex);
       fragment.appendChild(row);
       return row;
@@ -303,7 +447,11 @@ async function showAnime1FollowedRows() {
     });
 
     updateAnime1InfiniteScrollStatus(
-      `顯示 ${followedItems.length} 部追蹤動畫`
+      anime1CurrentOnly
+        ? `顯示 ${filteredItems.length} 部新番動畫`
+        : anime1BacklogOnly
+          ? `顯示 ${filteredItems.length} 部補番動畫`
+          : `顯示 ${filteredItems.length} 部追蹤動畫`
     );
   } catch (error) {
     console.warn("anime1:followedIndex failed", error);
@@ -335,41 +483,93 @@ function initAnime1FollowedFilterButton(tableWrapper) {
   toolbar.id = "anime1-extension-toolbar";
   toolbar.style.display = "flex";
   toolbar.style.justifyContent = "flex-end";
+  toolbar.style.gap = "8px";
   toolbar.style.margin = "0 0 12px";
 
-  const button = document.createElement("button");
-  button.id = "anime1-followed-filter-btn";
-  button.type = "button";
-  button.style.padding = "7px 12px";
-  button.style.border = "1px solid #64748b";
-  button.style.borderRadius = "6px";
-  button.style.cursor = "pointer";
-  button.style.fontSize = "14px";
-  button.style.fontWeight = "600";
+  function createFilterButton(id) {
+    const button = document.createElement("button");
+    button.id = id;
+    button.type = "button";
+    button.style.padding = "7px 12px";
+    button.style.border = "1px solid #64748b";
+    button.style.borderRadius = "6px";
+    button.style.cursor = "pointer";
+    button.style.fontSize = "14px";
+    button.style.fontWeight = "600";
+    return button;
+  }
 
-  button.addEventListener("click", () => {
+  function setAnime1FilterMode(mode) {
     const tbody = document.querySelector("#table-list tbody");
-    anime1FollowedOnly = !anime1FollowedOnly;
-    updateAnime1FollowedFilterButton();
+    const wasFiltered = isAnime1FilteredMode();
+    const nextFollowedOnly = mode === "followed";
+    const nextBacklogOnly = mode === "backlog";
+    const nextCurrentOnly = mode === "current";
+    const isSameMode =
+      (nextFollowedOnly && anime1FollowedOnly) ||
+      (nextBacklogOnly && anime1BacklogOnly) ||
+      (nextCurrentOnly && anime1CurrentOnly);
 
-    if (anime1FollowedOnly) {
-      anime1FollowedModeRows = tbody ? Array.from(tbody.children) : [];
-      anime1FollowedModeDeferredRows = [...anime1DeferredBottomRows];
-      anime1DeferredBottomRows = [];
-      showAnime1FollowedRows();
-    } else {
+    if (isSameMode) {
+      anime1FollowedOnly = false;
+      anime1BacklogOnly = false;
+      anime1CurrentOnly = false;
+      updateAnime1FilterButtons();
       restoreAnime1RowsAfterFollowedMode();
       updateAnime1InfiniteScrollStatus(
         isAnime1PaginationEnd(getAnime1PaginationNextButton())
           ? "已載入全部資料"
           : "繼續向下滾動以載入更多"
       );
+      return;
     }
+
+    if (!wasFiltered) {
+      anime1FollowedModeRows = tbody ? Array.from(tbody.children) : [];
+      anime1FollowedModeDeferredRows = [...anime1DeferredBottomRows];
+      anime1DeferredBottomRows = [];
+    }
+
+    anime1FollowedOnly = nextFollowedOnly;
+    anime1BacklogOnly = nextBacklogOnly;
+    anime1CurrentOnly = nextCurrentOnly;
+    updateAnime1FilterButtons();
+    showAnime1FollowedRows();
+  }
+
+  const currentButton = createFilterButton("anime1-current-filter-btn");
+  currentButton.addEventListener("click", () => {
+    setAnime1FilterMode("current");
   });
 
-  toolbar.appendChild(button);
+  const followedButton = createFilterButton("anime1-followed-filter-btn");
+  followedButton.addEventListener("click", () => {
+    setAnime1FilterMode("followed");
+  });
+
+  const backlogButton = createFilterButton("anime1-backlog-filter-btn");
+  backlogButton.addEventListener("click", () => {
+    setAnime1FilterMode("backlog");
+  });
+
+  const statusSummary = document.createElement("span");
+  statusSummary.id = "anime1-status-summary";
+  statusSummary.style.display = "inline-flex";
+  statusSummary.style.alignItems = "center";
+  statusSummary.style.padding = "0 4px";
+  statusSummary.style.fontSize = "13px";
+  statusSummary.style.color = "#cbd5e1";
+  statusSummary.style.whiteSpace = "nowrap";
+
+  toolbar.appendChild(statusSummary);
+  toolbar.appendChild(currentButton);
+  toolbar.appendChild(backlogButton);
+  toolbar.appendChild(followedButton);
   tableWrapper.insertAdjacentElement("beforebegin", toolbar);
-  updateAnime1FollowedFilterButton();
+  updateAnime1FilterButtons();
+  getAnime1ListIndex().catch(() => {
+    updateAnime1StatusSummary();
+  });
 }
 
 function continueAnime1InfiniteScrollIfNeeded() {
@@ -391,7 +591,7 @@ function continueAnime1InfiniteScrollIfNeeded() {
 
     if (
       (anime1InfiniteScrollIntersecting || sentinelIsNearViewport) &&
-      !anime1FollowedOnly &&
+      !isAnime1FilteredMode() &&
       !anime1InfiniteScrollLoading &&
       !isAnime1PaginationEnd(getAnime1PaginationNextButton())
     ) {
@@ -636,9 +836,16 @@ function saveAnime1Count(key, value) {
   chrome.storage.local.set({ anime1TitleCountByKey: anime1CountMap });
 }
 
+function saveAnime1UpdatedAt(cat) {
+  if (!cat) return;
+  anime1UpdatedAtByCatMap = { ...anime1UpdatedAtByCatMap, [cat]: Date.now() };
+  chrome.storage.local.set({ anime1UpdatedAtByCat: anime1UpdatedAtByCatMap });
+}
+
 function saveAnime1CatCount(cat, value) {
   anime1CountByCatMap = { ...anime1CountByCatMap, [cat]: value };
   chrome.storage.local.set({ anime1CountByCat: anime1CountByCatMap });
+  saveAnime1UpdatedAt(cat);
 }
 
 function saveAnime1Finished(key, finished) {
@@ -659,11 +866,13 @@ function saveAnime1TitleHidden(key, hidden) {
 function saveAnime1CatHidden(cat, hidden) {
   anime1HiddenCatMap = { ...anime1HiddenCatMap, [cat]: hidden };
   chrome.storage.local.set({ anime1HiddenCatByCat: anime1HiddenCatMap });
+  saveAnime1UpdatedAt(cat);
 }
 
 function saveAnime1CatFollowed(cat, followed) {
   anime1FollowedCatMap = { ...anime1FollowedCatMap, [cat]: followed };
   chrome.storage.local.set({ anime1FollowedCatByCat: anime1FollowedCatMap });
+  saveAnime1UpdatedAt(cat);
 }
 
 function saveAnime1FollowedItem(cat, item) {
@@ -695,6 +904,7 @@ function loadAnime1StateAndApply() {
       anime1HiddenCatByCat: {},
       anime1FollowedCatByCat: {},
       anime1FollowedItemByCat: {},
+      anime1UpdatedAtByCat: {},
     },
     (result) => {
       anime1CountMap = result.anime1TitleCountByKey || {};
@@ -704,6 +914,7 @@ function loadAnime1StateAndApply() {
       anime1HiddenCatMap = result.anime1HiddenCatByCat || {};
       anime1FollowedCatMap = result.anime1FollowedCatByCat || {};
       anime1FollowedItemByCatMap = result.anime1FollowedItemByCat || {};
+      anime1UpdatedAtByCatMap = result.anime1UpdatedAtByCat || {};
       scheduleApplyAnime1Counts();
     }
   );
@@ -736,6 +947,10 @@ function getAnime1RowInfo(row) {
   if (!titleCell) return null;
 
   const link = titleCell.querySelector("a[href]");
+  if (link) {
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+  }
   const href = link?.getAttribute("href") || link?.href || "";
   const normalizedUrl = normalizeAnime1Url(href);
   const cat = getAnime1CatFromHref(href);
@@ -765,7 +980,7 @@ function applyAnime1TitleHidden(row, titleCell, hidden, followed = false) {
   row.style.display = "";
   const titleLink = titleCell.querySelector("a");
   const target = titleLink || titleCell;
-  const showFollowedStyle = followed && !anime1FollowedOnly;
+  const showFollowedStyle = followed && !isAnime1FilteredMode();
   target.style.textDecoration =
     hidden || showFollowedStyle ? "line-through" : "";
   target.style.color = showFollowedStyle ? "#9ca3af" : "";
@@ -844,11 +1059,12 @@ function createCountInput(key, cat) {
 
   bindInteractiveControlEvents(input);
 
-  input.addEventListener("keydown", (event) => {
+  input.addEventListener("keydown", async (event) => {
     event.stopPropagation();
     if (event.key === "Enter") {
-      saveCountInputValue(input, key, cat);
+      await saveCountInputValue(input, key, cat);
       input.blur();
+      refreshAnime1BacklogRowsAfterProgressChange();
     }
   });
 
@@ -886,6 +1102,8 @@ function createCountSaveButton(input, key, cat) {
     } else {
       saveButton.textContent = "Error";
     }
+
+    refreshAnime1BacklogRowsAfterProgressChange();
 
     setTimeout(() => {
       saveButton.disabled = false;
@@ -948,6 +1166,9 @@ function createFinishedButton(input, saveButton, key) {
       saveButton,
       nextFinished
     );
+    if (nextFinished && anime1CurrentOnly) {
+      showAnime1FollowedRows();
+    }
   });
 
   updateFinishedButtonStyle(
@@ -1297,7 +1518,7 @@ function moveCompletedAnime1RowsToBottom() {
       ? !!anime1FollowedCatMap[rowInfo.cat]
       : false;
     row.style.display =
-      anime1FollowedOnly &&
+      isAnime1FilteredMode() &&
       (!rowInfo.cat || !anime1FollowedCatMap[rowInfo.cat])
         ? "none"
         : "";
@@ -1314,11 +1535,11 @@ function moveCompletedAnime1RowsToBottom() {
   const hasMorePages = !isAnime1PaginationEnd(getAnime1PaginationNextButton());
   const bottomRows = [...followedRows, ...hiddenRows];
   const displayedRows =
-    anime1FollowedOnly || !hasMorePages
+    isAnime1FilteredMode() || !hasMorePages
       ? [...normalRows, ...bottomRows]
       : normalRows;
   anime1DeferredBottomRows =
-    !anime1FollowedOnly && hasMorePages ? bottomRows : [];
+    !isAnime1FilteredMode() && hasMorePages ? bottomRows : [];
 
   const currentRows = Array.from(tbody.children);
   const orderChanged =
@@ -1374,7 +1595,9 @@ function applyAnime1Counts(
     }
     applyAnime1TitleHidden(row, titleCell, hidden, followed);
     row.style.display =
-      anime1FollowedOnly && (!cat || !anime1FollowedCatMap[cat]) ? "none" : "";
+      isAnime1FilteredMode() && (!cat || !anime1FollowedCatMap[cat])
+        ? "none"
+        : "";
 
     const hideButton = actionsWrap.querySelector(".anime1-hide-title-btn");
     if (hideButton) {
@@ -1387,7 +1610,7 @@ function applyAnime1Counts(
   });
 
   moveCompletedAnime1RowsToBottom();
-  updateAnime1FollowedFilterButton();
+  updateAnime1FilterButtons();
   hideAnime1MetadataColumns();
 }
 
@@ -1441,15 +1664,27 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.anime1TitleCountByKey) {
     anime1CountMap = changes.anime1TitleCountByKey.newValue || {};
-    scheduleApplyAnime1Counts();
+    if (anime1BacklogOnly) {
+      showAnime1FollowedRows();
+    } else {
+      scheduleApplyAnime1Counts();
+    }
   }
   if (changes.anime1CountByCat) {
     anime1CountByCatMap = changes.anime1CountByCat.newValue || {};
-    scheduleApplyAnime1Counts();
+    if (anime1BacklogOnly) {
+      showAnime1FollowedRows();
+    } else {
+      scheduleApplyAnime1Counts();
+    }
   }
   if (changes.anime1FinishedByKey) {
     anime1FinishedByKeyMap = changes.anime1FinishedByKey.newValue || {};
-    scheduleApplyAnime1Counts();
+    if (isAnime1FilteredMode()) {
+      showAnime1FollowedRows();
+    } else {
+      scheduleApplyAnime1Counts();
+    }
   }
   if (changes.anime1HiddenTitleByKey) {
     anime1HiddenTitleMap = changes.anime1HiddenTitleByKey.newValue || {};
@@ -1461,7 +1696,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (changes.anime1FollowedCatByCat) {
     anime1FollowedCatMap = changes.anime1FollowedCatByCat.newValue || {};
-    if (anime1FollowedOnly) {
+    if (isAnime1FilteredMode()) {
       showAnime1FollowedRows();
     } else {
       scheduleApplyAnime1Counts();
@@ -1470,7 +1705,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.anime1FollowedItemByCat) {
     anime1FollowedItemByCatMap =
       changes.anime1FollowedItemByCat.newValue || {};
-    if (anime1FollowedOnly) {
+    if (isAnime1FilteredMode()) {
+      showAnime1FollowedRows();
+    }
+  }
+  if (changes.anime1UpdatedAtByCat) {
+    anime1UpdatedAtByCatMap = changes.anime1UpdatedAtByCat.newValue || {};
+    if (anime1BacklogOnly) {
       showAnime1FollowedRows();
     }
   }
