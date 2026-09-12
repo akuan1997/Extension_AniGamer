@@ -37,6 +37,10 @@ function getAnime1PaginationNextButton() {
   );
 }
 
+function isAnime1DataRow(row) {
+  return !!row && !row.querySelector(":scope > td.dataTables_empty");
+}
+
 function isAnime1PaginationEnd(nextButton) {
   return (
     !nextButton ||
@@ -763,7 +767,11 @@ function initAnime1InfiniteScroll() {
   const tableWrapper = document.getElementById("table-list_wrapper");
   const nextButton = getAnime1PaginationNextButton();
   const tbody = table?.querySelector("tbody");
-  if (!table || !tableWrapper || !nextButton || !tbody?.children.length) return;
+  const hasDataRows =
+    !!tbody &&
+    (Array.from(tbody.children).some(isAnime1DataRow) ||
+      anime1DeferredBottomRows.length > 0);
+  if (!table || !tableWrapper || !nextButton || !hasDataRows) return;
 
   anime1InfiniteScrollReady = true;
   initAnime1FollowedFilterButton(tableWrapper);
@@ -1009,6 +1017,10 @@ function getAnime1CatFromHref(href) {
 }
 
 function getAnime1RowInfo(row) {
+  // DataTables inserts this placeholder while animelist.json is loading. It is
+  // not an anime row and must not be allowed to initialize the extension.
+  if (!isAnime1DataRow(row)) return null;
+
   const titleCell = row.querySelector("td:first-child");
   if (!titleCell) return null;
 
