@@ -8,6 +8,16 @@ const STORAGE_ANIME1_COUNT_CAT_KEY = "anime1CountByCat";
 const STORAGE_ANIME1_UPDATED_AT_CAT_KEY = "anime1UpdatedAtByCat";
 const STORAGE_ANIME1_FINISHED_CAT_KEY = "anime1FinishedByCat";
 const ANIME1_VISIBILITY_TABLE = "anime1_visibility";
+const STORAGE_JABLE_KEYWORDS_KEY = "jableKeywordPreferencesV2";
+const STORAGE_JABLE_VIDEOS_KEY = "jableVideoDismissalsV2";
+const JABLE_PREFERENCES_TABLE = "jable_preferences";
+const JABLE_KEYWORD_CATEGORIES = new Set([
+  "god",
+  "like",
+  "observe",
+  "fake_boobs",
+  "hard_to_use",
+]);
 const OAUTH_REDIRECT_PATH = "supabase-auth";
 
 function nowSeconds() {
@@ -517,6 +527,211 @@ async function upsertAnime1Finished(cat, finished) {
   return { ok: true };
 }
 
+function normalizeJablePreferenceKey(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function parseJableCategory(value, preferenceType) {
+  const category = String(value || "");
+  if (preferenceType === "video") {
+    return category === "watched" ? category : null;
+  }
+  return JABLE_KEYWORD_CATEGORIES.has(category) ? category : null;
+}
+
+async function cleanupExpiredJablePreferences(session, userId) {
+  const now = new Date().toISOString();
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${JABLE_PREFERENCES_TABLE}?user_id=eq.${encodeURIComponent(
+      userId
+    )}&preference_type=eq.video&expires_at=lte.${encodeURIComponent(now)}`,
+    {
+      method: "DELETE",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        Prefer: "return=minimal",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return {
+      ok: false,
+      error: data?.message || "Cleanup expired Jable preferences failed",
+    };
+  }
+
+  return { ok: true };
+}
+
+async function pullJablePreferences() {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const cleanupResult = await cleanupExpiredJablePreferences(session, userId);
+  if (!cleanupResult.ok) return cleanupResult;
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${JABLE_PREFERENCES_TABLE}?select=preference_type,preference_key,label,category,expires_at,updated_at&user_id=eq.${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "GET",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        Accept: "application/json",
+      },
+    }
+  );
+
+  const data = await response.json().catch(() => []);
+  if (!response.ok) {
+    return { ok: false, error: data?.message || "Fetch Jable preferences failed" };
+  }
+
+  const now = Date.now();
+  const keywords = {};
+  const videos = {};
+  data.forEach((row) => {
+    const preferenceType = row?.preference_type;
+    const key = normalizeJablePreferenceKey(row?.preference_key);
+    const category = parseJableCategory(row?.category, preferenceType);
+    if (!key || !category) return;
+
+    if (preferenceType === "keyword") {
+      keywords[key] = {
+        label: String(row.label || row.preference_key || "").trim(),
+        category,
+        updatedAt: Date.parse(row.updated_at) || now,
+      };
+      return;
+    }
+
+    if (preferenceType === "video") {
+      const expiresAt = Date.parse(row.expires_at);
+      if (!Number.isFinite(expiresAt) || expiresAt <= now) return;
+      videos[key] = {
+        label: String(row.label || "").trim(),
+        expiresAt,
+        updatedAt: Date.parse(row.updated_at) || now,
+      };
+    }
+  });
+
+  await new Promise((resolve) => {
+    chrome.storage.local.set(
+      {
+        [STORAGE_JABLE_KEYWORDS_KEY]: keywords,
+        [STORAGE_JABLE_VIDEOS_KEY]: videos,
+      },
+      resolve
+    );
+  });
+
+  return {
+    ok: true,
+    keywordCount: Object.keys(keywords).length,
+    videoCount: Object.keys(videos).length,
+  };
+}
+
+async function upsertJablePreference(preference) {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const preferenceType = preference?.preferenceType;
+  const preferenceKey = normalizeJablePreferenceKey(preference?.preferenceKey);
+  const category = parseJableCategory(preference?.category, preferenceType);
+  if (!["keyword", "video"].includes(preferenceType)) {
+    return { ok: false, error: "invalid_preference_type" };
+  }
+  if (!preferenceKey || preferenceKey.length > 200) {
+    return { ok: false, error: "invalid_preference_key" };
+  }
+  if (!category) return { ok: false, error: "invalid_category" };
+
+  let expiresAt = null;
+  if (preferenceType === "video") {
+    const parsedExpiry = Number(preference?.expiresAt);
+    if (!Number.isFinite(parsedExpiry) || parsedExpiry <= Date.now()) {
+      return { ok: false, error: "invalid_expiry" };
+    }
+    expiresAt = new Date(parsedExpiry).toISOString();
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${JABLE_PREFERENCES_TABLE}?on_conflict=user_id,preference_type,preference_key`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        preference_type: preferenceType,
+        preference_key: preferenceKey,
+        label: String(preference?.label || "").trim().slice(0, 200),
+        category,
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return { ok: false, error: data?.message || "Upsert Jable preference failed" };
+  }
+
+  return { ok: true };
+}
+
+async function deleteJablePreference(preferenceType, rawPreferenceKey) {
+  const session = await getValidSession();
+  const userId = session?.user?.id;
+  if (!session || !userId) return { ok: false, error: "not_signed_in" };
+
+  const preferenceKey = normalizeJablePreferenceKey(rawPreferenceKey);
+  if (!["keyword", "video"].includes(preferenceType) || !preferenceKey) {
+    return { ok: false, error: "invalid_preference" };
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/${JABLE_PREFERENCES_TABLE}?user_id=eq.${encodeURIComponent(
+      userId
+    )}&preference_type=eq.${preferenceType}&preference_key=eq.${encodeURIComponent(
+      preferenceKey
+    )}`,
+    {
+      method: "DELETE",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        Prefer: "return=minimal",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    return { ok: false, error: data?.message || "Delete Jable preference failed" };
+  }
+
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
@@ -563,6 +778,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "anime1:finishedUpsert": {
           const result = await upsertAnime1Finished(message.cat, message.finished);
+          sendResponse(result);
+          return;
+        }
+        case "jable:preferencesPull": {
+          const result = await pullJablePreferences();
+          sendResponse(result);
+          return;
+        }
+        case "jable:preferenceUpsert": {
+          const result = await upsertJablePreference(message.preference);
+          sendResponse(result);
+          return;
+        }
+        case "jable:preferenceDelete": {
+          const result = await deleteJablePreference(
+            message.preferenceType,
+            message.preferenceKey
+          );
           sendResponse(result);
           return;
         }
